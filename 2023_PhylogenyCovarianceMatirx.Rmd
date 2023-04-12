@@ -1,0 +1,644 @@
+---
+title: "Phylogeny for taxonomic relatedness"
+author: "Michelle DePrenger-Levin"
+date: "2023-01-31"
+output: html_document
+---
+TraitsER
+
+Chamberlain et al 2012 Does phylogeny matter
+Albrecht et al 2019 supplemental materials
+
+From Mike Moore
+"Without knowing a ton about the species themselves, my guess is that a reviewer will ask you to account for shared evolutionary history among the species somewhat if possible. This is because (I assume that) closely related species are more likely to share life-history categorizations than more distantly related species and aren’t necessarily independent, which could bias estimated marginal means, etc
+
+https://onlinelibrary.wiley.com/doi/full/10.1111/j.1461-0248.2012.01776.x
+
+You have a couple options if a reviewer brings it up (or if you want to get ahead of it). One option would be to model the shared evolutionary history among species by directly incorporating a phylogeny as a covariance matrix into the analysis. This would require a decent phylogeny for all the species, which might be tough given the wide taxonomic diversity you’re here (though there are options, eg timetree.org). A second option would be to include some kind of nesting random effects structure that accounts for taxonomic groupings of each species (e.g. genus, family, order, etc). I’m personally agonistic about which is these is better overall since they both have serious downsides, but my guess in your case here is that it’d be perfectly fine to just try to account for all of this with the nesting random effects structure.  "
+```{r}
+library(brranching)
+library(phylocomr)
+library(ape)
+library(taxize)  
+library(phytools)
+#V.PhyloMaker2
+library("V.PhyloMaker")
+
+library(dplyr)
+library(tidyr)
+
+library(ggplot2)
+library(ggtree)
+
+library(phylolm)
+library(pez)
+
+library(R2jags)
+library(runjags)
+library(mcmcplots)
+library(boot)
+
+load("C:/Users/DePrengm/OneDrive - Denver Botanic Gardens/P drive/My Documents/UCDenver_phd/Dissertation/Chapter3/Rdatas/plants_data2022-12-10.Rdata")
+```
+
+What if i did just group (random effects) of family or genus
+```{r}
+## Some families have all life histories, a few families fall into one, or primarily into one
+table(plants.data@data$Family, plants.data@data$LifeHistory) 
+plants.data@data %>%
+  group_by(LifeHistory, Family) %>%
+  summarise()
+
+table(plants.data@data$Genus, plants.data@data$LifeHistory) 
+table(plants.data@data$Family, plants.data@data$LifeHistory) 
+
+data.frame(table(plants.data@data$SpeciesAccepted, plants.data@data$LifeHistory)) %>%
+  mutate(Var1 = reorder(Var1, Freq)) %>%
+  ggplot(  aes(Var1, Freq, fill = Var2))+
+    geom_bar(position = "fill", stat = "identity")
+
+data.frame(table(plants.data@data$Genus, plants.data@data$LifeHistory)) %>%
+  mutate(Var1 = reorder(Var1, Freq)) %>%
+  ggplot(  aes(Var1, Freq, fill = Var2))+
+    geom_bar(position = "fill", stat = "identity")
+
+data.frame(table(plants.data@data$Family, plants.data@data$LifeHistory)) %>%
+  mutate(Var1 = reorder(Var1, Freq)) %>%
+  ggplot(  aes(Var1, Freq, fill = Var2))+
+    geom_bar(position = "fill", stat = "identity")+
+    theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+  
+data.frame(table(plants.data@data$Order, plants.data@data$LifeHistory)) %>%
+  mutate(Var1 = reorder(Var1, Freq)) %>%
+  ggplot(  aes(Var1, Freq, fill = Var2))+
+    geom_bar(position = "fill", stat = "identity")+
+    theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+
+length(unique(plants.data@data$SpeciesAccepted))
+length(unique(plants.data@data$Family)) ## 92 not all used in simulations
+# paste(unique(plants.data@data$SpeciesAccepted),collapse = ",")
+```
+
+
+ 
+```{r}
+
+sp.list <- as.data.frame(plants.data@data[,c("Family","Genus", "SpeciesAccepted")] ) %>%
+  # mutate(Family = replace(Family, Genus == "Laminaria", "Laminariaceae")) %>% ## large brown alga, oarweed
+  mutate(SpeciesAccepted = replace(SpeciesAccepted, SpeciesAccepted == "Silene Ciliata", "Silene ciliata")) %>%
+  mutate(Family = replace(Family, Family == "Compositae", "Asteraceae")) %>%
+  mutate(Family = replace(Family, Family == "Leguminosae", "Fabaceae")) %>%
+  mutate(Family = replace(Family, Family == "Legumiosae", "Fabaceae")) %>% ## misspelling in Kummerowia striata family
+  mutate(Family = replace(Family, Family == "Dipsacaceae", "Caprifoliaceae"))%>%
+  mutate(Family = replace(Family, Family == "Fzcaceae", "Fucaceae")) %>%
+  mutate(Family = replace(Family, Family == "Scropulariaceae", "Scrophulariaceae"))%>%
+  group_by(SpeciesAccepted,Genus,Family) %>%
+  # filter(n()==1) %>%
+  distinct() %>%
+  rename(species = SpeciesAccepted,
+            genus = Genus,
+            family = Family) 
+
+# sp.list[is.na(sp.list$family),]
+nrow(sp.list) # 317
+
+tree.LH <- phylo.maker(sp.list = sp.list[c("species","genus","family")])
+write.tree(tree.LH$scenario.3, paste("C:/Users/DePrengm/OneDrive - Denver Botanic Gardens/P drive/My Documents/UCDenver_phd/Dissertation/Chapter3/Rdatas/tree_LH",Sys.Date(),".tre",sep=""))
+## List to check taxonomy
+tree.LH$scenario.3 ## Phylogenetic tree with 314 tips and 302 internal nodes.
+
+tree.LH1 <- phylo.maker(sp.list = sp.list[c("species","genus","family")], scenarios = "S1")
+tree.LH1$scenario.1  ## Phylogenetic tree with 314 tips and 301 internal nodes
+
+## Attach LH to each species for node color
+## first summarize each species' traits
+species.data.sum <- plants.data@data %>%  
+  mutate(SpeciesAccepted = replace(SpeciesAccepted, SpeciesAccepted == "Silene Ciliata", "Silene ciliata")) %>%
+  mutate(Family = replace(Family, Family == "Compositae", "Asteraceae")) %>%
+  mutate(Family = replace(Family, Family == "Leguminosae", "Fabaceae")) %>%
+  mutate(Family = replace(Family, Family == "Legumiosae", "Fabaceae")) %>% ## misspelling in Kummerowia striata family
+  mutate(Family = replace(Family, Family == "Dipsacaceae", "Caprifoliaceae"))%>%
+  mutate(Family = replace(Family, Family == "Fzcaceae", "Fucaceae")) %>%
+  mutate(Family = replace(Family, Family == "Scropulariaceae", "Scrophulariaceae"))%>%
+  group_by(SpeciesAccepted, Genus, Family) %>%
+  summarise(shapeIteromean = mean(shapeItero,na.rm = TRUE),
+            adultLongmean = mean(remainingAgeMature,na.rm = TRUE),
+            matureAgemean = mean(matureAge,na.rm = TRUE),
+            gentimemean = mean(gentime,na.rm = TRUE),
+            growthratemean = mean(log(growthrate)))%>%
+  mutate(LifeHistory = as.factor(case_when(adultLongmean > 2 & matureAgemean < 3 ~ "FI",
+                                 adultLongmean < 3 & matureAgemean < 3 ~ "FS",
+                                 adultLongmean > 2 & matureAgemean > 2 ~ "SI",
+                                 adultLongmean < 3 & matureAgemean > 2 ~ "SS")),
+         Pace = as.factor(case_when(matureAgemean < 3 ~ "fast",
+                                    matureAgemean > 2 ~ "slow")))
+write.csv(species.data.sum, file = paste("C:/Users/DePrengm/OneDrive - Denver Botanic Gardens/P drive/My Documents/UCDenver_phd/Dissertation/Chapter3/Rdatas/plants_summarySpeciesList",Sys.Date(),".csv", sep=""))
+
+species.list.join <- tree.LH$species.list %>%
+  left_join(species.data.sum, by = c("species" = "SpeciesAccepted")) 
+tree.LH$species.list <- species.list.join 
+
+# fit <- phyloglm(Pace ~ 1, phy = tree.LH$scenario.3, data = species.list.join, boot = 100)
+
+## <http://blog.phytools.org/2017/01/plotting-terminal-edges-of-tree.html> 
+### vector of species with the name of each being the Life History
+# x <- tree.LH$scenario.3$tip.label
+# match(x, tree.LH$species.list$species) ## not in the same order
+  x <- tree.LH$species.list$LifeHistory
+# names(x) <- tree.LH$species.list$species
+# fi <- names(x)[x=="FI"]
+# fs <- names(x)[x=="FS"]
+# si <- names(x)[x=="SI"]
+# ss <- names(x)[x=="SS"]
+# tt <- paintBranches(tree.LH$scenario.3, edge = sapply(fi, match, tree.LH$scenario.3$tip.label), state = "fi")
+dotTree(tree.LH$scenario.3, x, show.tip.label = TRUE)
+
+tree.LH$species.list[grep("Lactuca",tree.LH$species.list$species),c("LifeHistory","shapeIteromean","matureAgemean","adultLongmean")] # SS
+tree.LH$species.list[grep("Pinus",tree.LH$species.list$species),c("species","LifeHistory","shapeIteromean","matureAgemean","adultLongmean")] # Pinus radiata by its matrix claims to be FS, no shapeIero for Pinus maximartinezii, others are slow itero
+tree.LH$species.list[grep("Ranunculus",tree.LH$species.list$species),c("species","LifeHistory","shapeIteromean","matureAgemean","adultLongmean")]
+levels(factor(tree.LH$species.list$LifeHistory)) ## FI = 1 red, FS = 2 blue, SI = 3 green, SS = 4 orange 
+
+tiporder <- gsub("_"," ",tree.LH$scenario.3$tip.label) ## 314
+LHlabel <- unlist(lapply(tiporder, function(x) tree.LH$species.list$LifeHistory[tree.LH$species.list$species == x]))
+LHorder <- as.numeric(as.factor(unlist(lapply(tiporder, function(x) tree.LH$species.list$LifeHistory[tree.LH$species.list$species == x]))))
+
+
+jpeg(paste("C:/Users/DePrengm/OneDrive - Denver Botanic Gardens/P drive/My Documents/UCDenver_phd/Dissertation/Chapter3/Figures/CirclePhylogeny", Sys.Date(), sep = ""), width=200, height=200,units='mm', res=300)
+plot(tree.LH$scenario.3, "f", tip.color = 
+       c("pink","blue","green","orange")[LHorder], cex = 0.5) 
+dev.off()
+
+ggsave(filename = paste("C:/Users/DePrengm/OneDrive - Denver Botanic Gardens/P drive/My Documents/UCDenver_phd/Dissertation/Chapter3/Figures/megaPhylogeny",Sys.Date(),".jpg", sep=""),
+  ggplot(tree.LH$scenario.3) +
+    geom_tree(layout = "inward_circular")+
+    geom_tiplab(size = 2, colour = c("pink","blue","green","orange")[LHorder], hjust = 0.5)+
+    theme_void(), 
+width=200, height=350,units='mm', dpi=300)
+
+levels(LHlabel)
+
+pairwise.tips.LH <- cophenetic(tree.LH$scenario.3)  ## Cophenetic distance for hierarchical clustering
+
+## <https://cran.r-project.org/web/packages/pez/vignettes/pez-pglmm-overview.pdf> 
+nspp <- length(tree.LH$scenario.3$tip.label) ## 314 species
+Vphy <- vcv(tree.LH$scenario.3) ## variance-covariance matrix (by default corr = FALSE)
+SVphy <- Vphy(det(Vphy)^(1/nspp))## standardize the VCV matrix since more species means larger phylogenetic distances, det is inf
+
+
+
+tree.LH$scenario.3$edge
+tree.LH$scenario.3$Nnode ## 121 species
+plot(tree.LH$scenario.3, edge.width = 2, type = "f", cex.main = .75)
+            
+```
+
+
+# Fay et al. 2021 Bernoulli  
+```{r}
+library(jagsUI)
+cat(file = "model01.jags", "
+model {
+  ### DATA
+  # SURVIVAL[i, t] with NA, 1 and 0
+  # BREED[i, t] with NA, 1 and 0
+  # DETECTED[i, t] with 0 and 1
+  # Pointers at the individual level
+  # FIRST[i]:LAST[i]
+  # n.year
+  # n.ind
+  ### LIKELIHOOD ###
+  for(i in 1:n.ind) {
+  ## Initial conditions
+  SURVIVAL[i, FIRST[i]] ~ dbern(1.0)
+  BREED[i, FIRST[i]] ~ dbern(psi[i, FIRST[i]] * SURVIVAL[i, FIRST[i]])
+  psi[i, FIRST[i]] <- ilogit(mu.psi.re + alpha[i, 2] + epsilon[FIRST[i], 2])
+  # note that you're necessarily detected on first occasion
+  DETECTED[i, FIRST[i]] ~ dbern(1.0)
+  ## Rest of the life histories
+  for(t in (FIRST[i] + 1):LAST[i]) {
+  # survival
+  SURVIVAL[i, t] ~ dbern(surv[i, t] * SURVIVAL[i, t-1])
+  surv[i, t] <- ilogit(mu.phi + gamma[1] * BREED[i, t-1] + alpha[i, 1] + epsilon[t, 1])
+  # breed
+  BREED[i, t] ~ dbern(psi[i, t] * SURVIVAL[i, t])
+  psi[i, t] <- ilogit(mu.psi + gamma[2] * BREED[i, t-1] + alpha[i, 2] + epsilon[t, 2])
+  # detection: you can only be detected if you're currently alive
+  # distinguish between states: breeding and non breeding
+  DETECTED[i, t] ~ dbern(ilogit(mu.p) * SURVIVAL[i, t])
+  }
+  }
+  ### PRIORS ###
+  # survival
+  mu.phi ~ dnorm(0.0, 0.4444444)
+  # breeding
+  mu.psi ~ dnorm(0.0, 0.4444444)
+  mu.psi.re ~ dnorm(0.0, 0.4444444)
+  # detection
+  mu.p ~ dnorm(0.0, 0.4444444)
+  # state dependent effects
+  prec_gamma <- pow(log(2)/2, -2);
+  for (j in 1:2) {
+  gamma[j] ~ dnorm(0.0, prec_gamma);
+  }
+  # Individual effect
+  # Cholesky decomposition with parameter expansion
+  for (j in 1:2) {
+  A[j, j] ~ dnorm(0.0, 0.4444444)T(0.0,)
+  DeltaA[j, j] <- 1/tauA[j] ; tauA[j] ~ dgamma(1.5, 1.5);
+  LA[j, j] <- 1.0;
+  }
+  LA[1, 2] <- 0.0; A[1, 2] <- 0.0; DeltaA[1, 2] <- 0.0;
+  LA[2, 1] ~ dnorm(0.0, 4.0); A[2, 1] <- 0.0; DeltaA[2, 1] <- 0.0;
+  # covariance matrix
+  Omega <- A %*% LA %*% DeltaA %*% t(LA) %*% A;
+  for(i in 1:n.ind){
+  alpha[i, 1] <- A[1, 1] * (LA[1, 1] * xi_a[i, 1]);
+  alpha[i, 2] <- A[2, 2] * (LA[2, 1] * xi_a[i, 1] + LA[2, 2] * xi_a[i, 2]);
+  for(j in 1:2){
+  xi_a[i, j] ~ dnorm(0.0, tauA[j]);
+  }
+  }
+  sigma.alpha.phi <- sqrt(Omega[1, 1])
+  sigma.alpha.psi <- sqrt(Omega[2, 2])
+  cor.alpha <- Omega[1, 2] / sqrt(Omega[1, 1] * Omega[2, 2])
+  # Environmental effect
+  for (j in 1:2) {
+  E[j, j] ~ dnorm(0.0, 0.4444444)T(0.0,)
+  DeltaE[j, j] <- 1/tauE[j] ; tauE[j] ~ dgamma(1.5, 1.5);
+  LE[j, j] <- 1.0;
+  }
+  LE[1, 2] <- 0.0; E[1, 2] <- 0.0; DeltaE[1, 2] <- 0.0;
+  LE[2, 1] ~ dnorm(0.0, 4.0); E[2, 1] <- 0.0; DeltaE[2, 1] <- 0.0;
+  # covariance matrix
+  Lambda <- E %*% LE %*% DeltaE %*% t(LE) %*% E;
+  for(i in 1:n.year){
+  epsilon[i, 1] <- E[1, 1] * (LE[1, 1] * xi_e[i, 1]);
+  epsilon[i, 2] <- E[2, 2] * (LE[2, 1] * xi_e[i, 1] + LE[2, 2] * xi_e[i, 2]);
+  for(j in 1:2){
+  xi_e[i, j] ~ dnorm(0.0, tauE[j]);
+  }
+  }
+  sigma.eps.phi <- sqrt(Lambda[1, 1])
+  sigma.eps.psi <- sqrt(Lambda[2, 2])
+  cor.eps <- Lambda[1, 2] / sqrt(Lambda[1, 1] * Lambda[2, 2])
+  # Derived quantity
+  mean.phi <- ilogit(mu.phi)
+  mean.psi.re <- ilogit(mu.psi.re)
+  mean.psi <- ilogit(mu.psi)
+  mean.p <- ilogit(mu.p)
+  }
+")
+
+# Bundle data
+jags.data <- list(SURVIVAL = SURVIVAL, BREED = BREED, FIRST = first, LAST = last, n.ind = n.ind, n.year = n.year)
+inits <- function(){list(SURVIVAL = init.surv, BREED = init.breed)}
+# Parameters monitored
+parameters <- c("mean.phi", "mean.psi", "mean.psi.re", "mean.p", "cor.alpha", "sigma.alpha.phi", "sigma.alpha.psi",
+                "sigma.eps.phi", "sigma.eps.psi", "gamma")
+# MCMC settings
+ni <- 8000
+nt <- 4
+nb <- 2000
+nc <- 3
+# Call JAGS from R (BRT 1 min)
+out1 <- jags(jags.data, inits, parameters, "model01.jags", n.chains = nc, n.thin = nt, n.iter = ni, 
+             n.burnin = nb, parallel = TRUE)
+RESULT[1:11,1,k] <- c(out1$mean$mean.phi, out1$mean$mean.psi, out1$mean$mean.psi.re, out1$mean$mean.p, 
+                      out1$mean$cor.alpha, out1$mean$sigma.alpha.phi, out1$mean$sigma.alpha.psi, out1$mean$sigma.eps.phi,
+                      out1$mean$sigma.eps.psi, out1$mean$gamma[1], out1$mean$gamma[2])
+RESULT[1:11,2,k] <- c(out1$Rhat$mean.phi, out1$Rhat$mean.psi, out1$Rhat$mean.psi.re, out1$Rhat$mean.p, 
+                      out1$Rhat$cor.alpha, out1$Rhat$sigma.alpha.phi, out1$Rhat$sigma.alpha.psi, 
+                      out1$Rhat$sigma.eps.phi, out1$Rhat$sigma.eps.psi, out1$Rhat$gamma[1], out1$Rhat$gamma[2])
+
+```
+
+Modify Fay et al 2021 to fit my data. Use Jacquemin and Doll 2012 for using the tree variance-covariance and inverse-Wishart prior (both used, Fay testing this and a made up one, inverse-Wishart was better)    
+     1. select a single measure per species 
+
+```{r}
+library(jagsUI)
+cat(file = "model01.jags", "
+model {
+  ### DATA
+  # SURVIVAL[i, t] with NA, 1 and 0
+  # BREED[i, t] with NA, 1 and 0
+  # DETECTED[i, t] with 0 and 1
+  # Pointers at the individual level
+  # FIRST[i]:LAST[i]
+  # n.year
+  # n.ind
+  ### LIKELIHOOD ###
+  for(i in 1:n.ind) {
+  ## Initial conditions
+  SURVIVAL[i, FIRST[i]] ~ dbern(1.0)
+  BREED[i, FIRST[i]] ~ dbern(psi[i, FIRST[i]] * SURVIVAL[i, FIRST[i]])
+  psi[i, FIRST[i]] <- ilogit(mu.psi.re + alpha[i, 2] + epsilon[FIRST[i], 2])
+  # note that you're necessarily detected on first occasion
+  DETECTED[i, FIRST[i]] ~ dbern(1.0)
+  ## Rest of the life histories
+  for(t in (FIRST[i] + 1):LAST[i]) {
+  # survival
+  SURVIVAL[i, t] ~ dbern(surv[i, t] * SURVIVAL[i, t-1])
+  surv[i, t] <- ilogit(mu.phi + gamma[1] * BREED[i, t-1] + alpha[i, 1] + epsilon[t, 1])
+  # breed
+  BREED[i, t] ~ dbern(psi[i, t] * SURVIVAL[i, t])
+  psi[i, t] <- ilogit(mu.psi + gamma[2] * BREED[i, t-1] + alpha[i, 2] + epsilon[t, 2])
+  # detection: you can only be detected if you're currently alive
+  # distinguish between states: breeding and non breeding
+  DETECTED[i, t] ~ dbern(ilogit(mu.p) * SURVIVAL[i, t])
+  }
+  }
+  ### PRIORS ###
+  # survival
+  mu.phi ~ dnorm(0.0, 0.4444444)
+  # breeding
+  mu.psi ~ dnorm(0.0, 0.4444444)
+  mu.psi.re ~ dnorm(0.0, 0.4444444)
+  # detection
+  mu.p ~ dnorm(0.0, 0.4444444)
+  # state dependent effects
+  prec_gamma <- pow(log(2)/2, -2);
+  for (j in 1:2) {
+  gamma[j] ~ dnorm(0.0, prec_gamma);
+  }
+  # Individual effect
+  # Cholesky decomposition with parameter expansion
+  for (j in 1:2) {
+  A[j, j] ~ dnorm(0.0, 0.4444444)T(0.0,)
+  DeltaA[j, j] <- 1/tauA[j] ; tauA[j] ~ dgamma(1.5, 1.5);
+  LA[j, j] <- 1.0;
+  }
+  LA[1, 2] <- 0.0; A[1, 2] <- 0.0; DeltaA[1, 2] <- 0.0;
+  LA[2, 1] ~ dnorm(0.0, 4.0); A[2, 1] <- 0.0; DeltaA[2, 1] <- 0.0;
+  # covariance matrix
+  Omega <- A %*% LA %*% DeltaA %*% t(LA) %*% A;
+  for(i in 1:n.ind){
+  alpha[i, 1] <- A[1, 1] * (LA[1, 1] * xi_a[i, 1]);
+  alpha[i, 2] <- A[2, 2] * (LA[2, 1] * xi_a[i, 1] + LA[2, 2] * xi_a[i, 2]);
+  for(j in 1:2){
+  xi_a[i, j] ~ dnorm(0.0, tauA[j]);
+  }
+  }
+  sigma.alpha.phi <- sqrt(Omega[1, 1])
+  sigma.alpha.psi <- sqrt(Omega[2, 2])
+  cor.alpha <- Omega[1, 2] / sqrt(Omega[1, 1] * Omega[2, 2])
+  # Environmental effect
+  for (j in 1:2) {
+  E[j, j] ~ dnorm(0.0, 0.4444444)T(0.0,)
+  DeltaE[j, j] <- 1/tauE[j] ; tauE[j] ~ dgamma(1.5, 1.5);
+  LE[j, j] <- 1.0;
+  }
+  LE[1, 2] <- 0.0; E[1, 2] <- 0.0; DeltaE[1, 2] <- 0.0;
+  LE[2, 1] ~ dnorm(0.0, 4.0); E[2, 1] <- 0.0; DeltaE[2, 1] <- 0.0;
+  # covariance matrix
+  Lambda <- E %*% LE %*% DeltaE %*% t(LE) %*% E;
+  for(i in 1:n.year){
+  epsilon[i, 1] <- E[1, 1] * (LE[1, 1] * xi_e[i, 1]);
+  epsilon[i, 2] <- E[2, 2] * (LE[2, 1] * xi_e[i, 1] + LE[2, 2] * xi_e[i, 2]);
+  for(j in 1:2){
+  xi_e[i, j] ~ dnorm(0.0, tauE[j]);
+  }
+  }
+  sigma.eps.phi <- sqrt(Lambda[1, 1])
+  sigma.eps.psi <- sqrt(Lambda[2, 2])
+  cor.eps <- Lambda[1, 2] / sqrt(Lambda[1, 1] * Lambda[2, 2])
+  # Derived quantity
+  mean.phi <- ilogit(mu.phi)
+  mean.psi.re <- ilogit(mu.psi.re)
+  mean.psi <- ilogit(mu.psi)
+  mean.p <- ilogit(mu.p)
+  }
+")
+
+# Bundle data
+jags.data <- list(SURVIVAL = SURVIVAL, BREED = BREED, FIRST = first, LAST = last, n.ind = n.ind, n.year = n.year)
+inits <- function(){list(SURVIVAL = init.surv, BREED = init.breed)}
+# Parameters monitored
+parameters <- c("mean.phi", "mean.psi", "mean.psi.re", "mean.p", "cor.alpha", "sigma.alpha.phi", "sigma.alpha.psi",
+                "sigma.eps.phi", "sigma.eps.psi", "gamma")
+# MCMC settings
+ni <- 8000
+nt <- 4
+nb <- 2000
+nc <- 3
+# Call JAGS from R (BRT 1 min)
+out1 <- jags(jags.data, inits, parameters, "model01.jags", n.chains = nc, n.thin = nt, n.iter = ni, 
+             n.burnin = nb, parallel = TRUE)
+RESULT[1:11,1,k] <- c(out1$mean$mean.phi, out1$mean$mean.psi, out1$mean$mean.psi.re, out1$mean$mean.p, 
+                      out1$mean$cor.alpha, out1$mean$sigma.alpha.phi, out1$mean$sigma.alpha.psi, out1$mean$sigma.eps.phi,
+                      out1$mean$sigma.eps.psi, out1$mean$gamma[1], out1$mean$gamma[2])
+RESULT[1:11,2,k] <- c(out1$Rhat$mean.phi, out1$Rhat$mean.psi, out1$Rhat$mean.psi.re, out1$Rhat$mean.p, 
+                      out1$Rhat$cor.alpha, out1$Rhat$sigma.alpha.phi, out1$Rhat$sigma.alpha.psi, 
+                      out1$Rhat$sigma.eps.phi, out1$Rhat$sigma.eps.psi, out1$Rhat$gamma[1], out1$Rhat$gamma[2])
+
+```
+
+
+### JAGS binomial regression and use phylogenetic variance-covariance as   
+y ~ mnorm(mu, $\sum$)    
+mu = alpha + beta1x1 + beta2x2 + ....
+$\sum$ is the $\sigma$ variance is the intercept and represents hypothetical mean with zero values of the x's because they are centered and scaled.   
+inverse-Wishart prior for the variance-covariance matrix,     
+This example has y as a continuous variable and a linear model, I need a binomial model with categorical variables  
+```{r}
+
+model { 
+  for (i in 1:sites){ 
+    spcv[i,1:S]~dmnorm(mu[],TAU[,])
+    }
+  
+  for (j in 1:S) {
+    mu[j]<-alpha+beta[1]*range[j]+beta[2]*bs[j] # range = geographic range, bs = body size
+    }
+  
+  for (k in 1:2){
+    beta[k] ~ ddexp(0, tau.beta) #prior for model coefficients 10
+    }
+  
+  tau.beta<-lambda*tau.beta.2 #hyperprior for model coefficient
+  tau.beta.2~dgamma(0.001,0.001) 
+  lambda~dgamma(0.001,0.001) 
+  alpha~dnorm(0,0.0001) 
+  TAU[1:S,1:S] ~ dwish(invA[,],S) 
+}
+  
+predicted[1:S]~dmnorm(mu[],TAU[,]) #Posterior predictive check
+# This was conducted by calculating the posterior mean of the overall coefficient of 
+# variation for each species at each step in the Markov Chain. The 95% credible 
+# intervals from the estimated coefficient of variation was compared to the mean 
+# value for each species.
+
+## reported parameter medians and 95% credible interval - concidered 'significant' when 95% CI do not overlap zero
+```
+
+
+
+   <https://pedrohbraga.github.io/CommunityPhylogenetics-Workshop/CommunityPhylogenetics-Workshop.html>  
+Community Phylogenetics 
+```{r}
+# Check for needed packages, and install the missing ones
+required.libraries <- c("ape", "picante", 
+                        "pez", "phytools",
+                        "vegan", "adephylo", 
+                        "phylobase", "geiger", 
+                        "mvMORPH", "OUwie", 
+                        "hisse", "BAMMtools",
+                        "phylosignal", "Biostrings",
+                        "devtools","ggplot2", 
+                        "kableExtra", "betapart", "gridExtra",
+                        "reshape2")
+
+needed.libraries <- required.libraries[!(required.libraries %in% installed.packages()[,"Package"])]
+if(length(needed.libraries)) install.packages(needed.libraries)
+
+# Load all required libraries at once
+lapply(required.libraries, require, character.only = TRUE)
+
+### Install ggtree from BiocManager
+
+if (!requireNamespace("BiocManager", quietly = TRUE))
+    install.packages("BiocManager")
+
+BiocManager::install("ggtree")
+
+set.seed(1)
+```
+
+```{r}
+# Download files from Marc Cadotte's and Jonathan Davies' book 
+# "Phylogenies in Ecology: A guide to concepts and methods":
+
+dir.create("C:/Users/deprengm/OneDrive - Denver Botanic Gardens/P drive/My Documents/UCDenver_phd/Dissertation/Chapter3/Rdatas/data/Jasper")
+
+download.file("https://raw.githubusercontent.com/pedrohbraga/PhyloCompMethods-in-R-workshop/master/data/Jasper/resources/data/Jasper/jasper_data.csv", 
+              "data/Jasper/jasper_data.csv")
+
+download.file("https://raw.githubusercontent.com/pedrohbraga/PhyloCompMethods-in-R-workshop/master/data/Jasper/resources/data/Jasper/jasper_tree.phy", 
+              "data/Jasper/jasper_tree.phy")
+
+# Download the tree files from this paper
+
+# download.file("https://onlinelibrary.wiley.com/action/
+# downloadSupplement?doi=10.1111%2Fj.1461-0248.2009.01307.x&attachmentId=179085359", 
+#              destfile = "data/ele_1307_sm_sa1.tre")
+
+# If the download of the above file does not work, 
+# download the first supplementary material from the following paper
+# and place it within your 'data' directory:
+# https://onlinelibrary.wiley.com/doi/abs/10.1111/j.1461-0248.2009.01307.x
+```
+
+
+The picante package
+One of the core packages for hypothesis testing in ecophylogenetics is picante (Kembel et al. 2010). picante mainly works with three types of objects: the phylogeny data as a phylo class object; the community presence-absence (binary) or abundance matrix; and a species-trait matrix.
+
+```{r}
+## Tree
+tree.LH$scenario.3
+
+## community data (or species within a life history?)
+# comm.LH <- as.matrix(table(tree.LH$species.list$LifeHistory, tree.LH$species.list$species))
+comm.LH <- as.matrix(table(species.list.join$LifeHistory, species.list.join$species))
+##Oh, tips have _ instead of spaces, comm data has spaces, nothing matches
+dimnames(comm.LH)[[2]] <- unlist(lapply(dimnames(comm.LH)[[2]], function(x) gsub(" ","_",x)))
+
+
+## Phylogenetic patters as proxies of life history assignment  
+# explain uneven distribution of species throughout life history traits, recently diverged tend to be ecologically similar, similar things to address and have a life history trait  
+## Within-assemblage phylogenetic structure   
+# Faith’s PD (1992) sums the branch lengths of all co-occurring species in a given site, from the tips to the root of the phylogenetic tree. Higher PD values are given to communities that has more evolutionary divergent taxa and older history, while lower PD values represent assemblages that have taxa with more recent evolutionary history.  
+
+
+
+## prune and sort so phylogeny and community or trait data match, exlucdes three algea/lichen
+tree.LH.clean <- match.phylo.comm(phy = tree.LH$scenario.3, 
+                                  comm = comm.LH)$phy
+comm.LH.clean <- match.phylo.comm(phy = tree.LH$scenario.3, 
+                                  comm = comm.LH)$comm
+
+par(mar=c(5.1, 4.1, 4.1, 2.1))
+## The Phylogenetic sturcutre, PD larger means more evolutionary divergent taxa, older history
+##                             PD lower more recent evolutionary history
+##                             SR is species richness 
+LH.pd <- picante::pd(samp = comm.LH.clean,
+                     tree = tree.LH.clean,
+                     include.root = FALSE)
+cor.test(LH.pd$PD, LH.pd$SR)
+plot(LH.pd$PD, 
+     LH.pd$SR, 
+     xlab = "Phylogenetic Diversity", ylab = "Species Richness in life history trait", 
+     pch = 16)
+
+## Randomizations and null models 
+# taxa.labels - shuffle taxa across tips
+### repeat several times for distribution of null models, calculate standardized effect size of PD for each community using ses.pd()
+
+LH.ses.pd <- ses.pd(samp = comm.LH.clean, 
+                        tree = tree.LH.clean, 
+                        null.model = "taxa.labels", 
+                        runs = 1000)
+LH.ses.pd
+levels(species.list.join$LifeHistory)
+```
+
+
+# Phylogenetic variance-covariance matrix
+## To what degree to closely related taxa fall in the same life history
+```{r}
+pairwise.tips.LH[1:4,1:4]
+cophenDist.LH <- cophenetic.phylo(tree.LH.clean)
+
+# Net relatedness index - mean phylgenetic distances, NRI is obtained by multiplying the standardized effect size mean phylogenetic (pairwise) distances (calculated via a null model of interest) by  −1
+# negative phylogenetic overdispersion (within group less closely related than expected)
+# positive clustering (within group more closely related than expected from null)
+
+LH.ses.mpd <- ses.mpd(comm.LH.clean, 
+                      cophenDist.LH, 
+                      null.model = "taxa.labels", 
+                      abundance.weighted = FALSE, 
+                      runs = 100)
+
+# Calculate NRI
+LH.NRI <- as.matrix(-1 * ((LH.ses.mpd[,2] - LH.ses.mpd[,3]) /
+                            LH.ses.mpd[,4]))
+rownames(LH.NRI) <- row.names(LH.ses.mpd)
+colnames(LH.NRI) <- "NRI"
+
+
+```
+
+         NRI
+FI  1.588139  
+FS  1.023937
+SI -2.367691   *more closely related than null but way more of these than other groups
+SS  2.102189
+
+
+# richness - randomize trait data matrix within samples
+
+Do some comparisons of alpha diveristy, within trait diversity
+
+Then do Phylogenetic beta diversity (among trait group phylogenetic diversity)
+
+Many metrics are available to assess the phylogenetic β
+ diversity of communities. Here, we will start with the PhyloSor index, which is the phylogenetic analog of the Sørensen index (Bryant et al., 2008; Swenson, 2011; Feng et.al., 2012). It is based on the total length of branches shared and unshared between paired communities.
+
+```{r}
+LH.cophenDist <- cophenetic.phylo(tree.LH.clean)
+
+## Compare among LH groups
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+

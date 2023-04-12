@@ -1,0 +1,463 @@
+TraitsLH
+
+```{r}
+
+rm(list=ls())
+
+library(Rage)
+library(popdemo)
+library(lefko3)
+library(Rcompadre)
+
+
+library(dplyr)
+library(tidyr)
+library(purrr)
+library(tidyverse)
+library(patchwork)
+
+library(popbio)
+library(MASS)
+
+```
+
+Borrowed from "Other key life history traits from MPMs" in COMPADRE plant matrix database    
+<https://compadre-db.org/Education/article/other-key-life-history-traits-from-mpms>   
+```{r}
+
+# Define function
+lifeTimeRepEvents <- function(matU, matF, startLife = 1) {
+  
+  uDim = dim(matU)[1]
+  surv = colSums(matU)
+  repLifeStages = colSums(matF)
+  
+  repLifeStages[which(repLifeStages>0)] <- 1
+  
+  if(missing(matF) | missing(matU)) {stop('matU or matF missing')}
+  if(sum(matF, na.rm=T)==0) {stop('matF contains only 0 values')}
+  
+  # Probability of survival to first reprod event
+  Uprime <- matU
+  Uprime[, which(repLifeStages==1)] <- 0
+  Mprime = matrix(0,2,uDim)
+  for (p in 1:uDim[1]) {
+    if (repLifeStages[p]==1) {Mprime[2,p] = 1} else {
+      Mprime[1,p] = 1-surv[p]
+    }
+  }
+  Bprime = Mprime%*%(ginv(diag(uDim)-Uprime))
+  pRep = Bprime[2,startLife]
+  
+  out = data.frame(pRep = pRep)
+  
+  # Age at first reproduction (La; Caswell 2001, p 124) AGE OF REPRODUCTIVE MATURITY
+  D = diag(c(Bprime[2,]))
+  Uprimecond = D%*%Uprime%*%ginv(D)
+  expTimeReprod = colSums(ginv(diag(uDim)-Uprimecond))
+  La = expTimeReprod[startLife]
+  
+  out$La = La
+  
+  # Mean life expectancy conditional on entering the life cycle in the first reproductive stage 
+  # longevity after being reproductive given that you made it to be reproductive
+  firstRepLifeStage = min(which(repLifeStages==1))
+  N = solve(diag(uDim[1])-matU) ## solve finds the inverse (so you can multiply to do division)
+  meanRepLifeExpectancy = colSums(N)[firstRepLifeStage]
+  
+  out$meanRepLifeExpectancy = meanRepLifeExpectancy
+  
+  # Life expectancy from mean maturity
+  remainingMatureLifeExpectancy = colSums(N)[startLife]-La
+  
+  out$remainingMatureLifeExpectancy = remainingMatureLifeExpectancy
+  
+  return(out)
+}
+
+
+fi <- "blue"
+si <- "brown"
+fs <- "chartreuse4"
+ss <- "goldenrod3"
+
+```
+
+  
+```{r}
+## fetch most recent from website, add logical columns to metadata to flag potential problems
+compadre <- cdb_fetch("compadre", flag = TRUE)
+
+plants <- compadre %>%
+  filter(MatrixSplit == "Divided") %>%
+  filter(ProjectionInterval == 1) %>%
+  filter(check_irreducible == TRUE) %>%
+  subset(MatrixComposite != "Seasonal")
+
+## Plot geographic distribution
+ggplot(plants, aes(Lon, Lat))+
+  borders(database = "world", fill = "grey80", col = NA) +
+  geom_point(alpha = 0.4, color = "blue") +
+  scale_x_continuous(breaks = seq(-180, 180, 90), expand = c(0, 0))+
+  scale_y_continuous(expand = c(0, 0)) +
+  labs(x = "Longitude", y = "Latitude") +
+  theme_minimal()
+
+
+plants.data <- plants %>%
+  mutate(Species = SpeciesAccepted) %>%
+  mutate(matA = matA(.),
+         start_life = mpm_first_active(.)) %>%
+  mutate(matU = matU(.),
+         start_life = mpm_first_active(.)) %>%  
+  ## To get lifeTimeRepEvents to work
+  mutate(N_inv = lapply(matU, function(x) diag(dim(x)[1])-x)) %>%  ## solve(diag(uDim[1])-matU) is singular det()==0
+  filter(lapply(N_inv, function(x) det(x)) != 0) %>%
+  mutate(matF = matF(.), 
+         start_life = mpm_first_active(.)) %>%
+  mutate(matC = matC(.),
+         start_life = mpm_first_active(.)) %>%
+  mutate(classes = MatrixClassAuthor(.)) %>%
+  mutate(activeclasses = MatrixClassOrganized(.)) %>%
+  mutate(matF_all0 = mapply(sum, matF)) %>% # remove matrices where fecundity is all zero
+  filter(matF_all0 != 0) %>%
+  mutate(seedbank = ifelse(grepl("seedbank|Seedbank|seeds|Seeds",classes), "Yes", "No")) %>%
+  mutate(matR = mapply("+", matF, matC)) %>%
+  filter(!sapply(matU, function(x) any(colSums(x) > 1))) %>% ## remove any matU where transition over 1
+  filter(!is.na(mpm_first_active(.))) %>% # in one case there was an NA
+  filter(!sapply(matU, function(x) sum(is.na(matU))>0)) %>% ## need to remove any matUs that are NA
+  mutate(gentime = mapply(gen_time, matU, matF)) %>%
+  mutate(matureAge = mapply(mature_age, matU, matF, start = start_life)) %>%
+  ## instead take the median of checking through start life of each stage and a range of critical survival
+  mutate(longevity = mapply(longevity, matU, start = start_life, lx_crit = 0.01)) %>%
+  mutate(convage = mapply(qsd_converge, matU, start = mpm_first_active(.))) %>% 
+  filter(longevity - convage <= 0) %>%
+  mutate(matU = mapply(function(x,y) name_stages(x, names = y, prefix = ""), matU, classes),
+         matF = mapply(function(x,y) name_stages(x, names = y, prefix = ""), matF, classes)) %>%
+  mutate(netReproRate = mapply(net_repro_rate, matU, matF, method = "start", start = mpm_first_active(.))) %>%
+  mutate(exc.class = mapply(grepl, "prop|dorm", activeclasses)) %>%
+  mutate(exc.IDs = mapply(which, exc.class)) %>% ## which stages are dormant or propagules
+  mutate(lx = mapply(mpm_to_lx, matU, start_life, lx_crit = 0.01)) %>%
+  mutate(mx = mapply(mpm_to_mx, matU, matF, start_life, lx_crit = 0.01)) %>%
+  mutate(DegreeItero = mapply(entropy_d,lx,mx)) 
+
+## Degree of Iteroparity should be (0,inf) not negative
+## shape_rep calculates a shape value of distribution of reproduction over age (-0.5 < S < 0.5)
+shapeItero <- c()
+for(i in 1:length(plants.data$MatrixID)){
+  print(paste(i, plants.data$SpeciesAccepted[i]))
+  if(length(plants.data$mx[i][[1]][plants.data$mx[i][[1]]>0])<3){ # must have > 2 nonzero
+    shapeItero[i] <- NA
+  } else {
+  shapeItero[i] <- shape_rep(plants.data$mx[[i]])
+}}
+plants.data$shapeItero <- shapeItero
+
+## Some matrices are computationally singular and not invertible
+for(i in c(1:135,138:903,905:1059,1061:1247,1249,1251:1398,1400:length(plants.data$MatrixID))){
+  print(paste(i, plants.data$SpeciesAccepted[i], plants.data$MatrixID[i]))
+  lifeTimeRepEvents(plants.data$matU[[i]],plants.data$matF[[i]], plants.data$start_life[[i]])
+}
+
+problemMatIDs <- plants.data$MatrixID[c(136:137,904,1060,1248,1250,1399)]
+
+plants.data <- plants.data %>%
+  mutate(growthrate = unlist(lapply(matA, popbio::lambda)))
+
+meanAgeMature <- c()
+for(i in 1:length(plants.data$MatrixID)){
+  print(i)
+  if(i %in% c(136:137, 904,1060, 1248,1250, 1399)){ 
+    meanAgeMature[i] <- NA
+  } else {
+    meanAgeMature[i] <- lifeTimeRepEvents(plants.data$matU[[i]],plants.data$matF[[i]], plants.data$start_life[[i]])[2]
+  }
+}
+
+plants.data$meanAgeMature <- do.call(c, meanAgeMature)
+
+remainingAgeMature <- c()
+for(i in 1:length(plants.data$MatrixID)){
+  if(i %in% c(136:137, 904,1060, 1248,1250, 1399)){
+    remainingAgeMature[i] <- NA
+  } else {
+    remainingAgeMature[i] <- lifeTimeRepEvents(plants.data$matU[[i]],plants.data$matF[[i]],
+                                               plants.data$start_life[[i]])[3]
+  }
+}
+plants.data$remainingAgeMature <- do.call(c, remainingAgeMature)
+```
+
+
+```{r}
+
+plants.data <- plants.data %>%
+  mutate(parity = case_when(remainingAgeMature >= 3 ~ "itero",
+                            remainingAgeMature < 3 ~ "semel")) %>%
+  filter(!is.na(remainingAgeMature)) %>%
+  mutate(LifeHistory = case_when(matureAge < 3 & remainingAgeMature < 3 ~ "FS",
+                                 matureAge >= 3  & remainingAgeMature < 3 ~ "SS",
+                                 matureAge < 3  & remainingAgeMature >= 3 ~ "FI",
+                                 matureAge >= 3  & remainingAgeMature >= 3 ~ "SI"))
+
+## Compare to semelparity defined as 1 or fewer years of adult longevity, i.e. age of reproductive maturity followed by death 
+plants.dataSI1 <- plants.data %>%
+  mutate(parity = case_when(remainingAgeMature >= 3 ~ "itero",
+                            remainingAgeMature < 3 ~ "semel")) %>%
+  filter(!is.na(remainingAgeMature)) %>%
+  mutate(LifeHistory = case_when(matureAge < 3 & remainingAgeMature <= 1 ~ "FS",
+                                 matureAge >= 3  & remainingAgeMature <= 1 ~ "SS",
+                                 matureAge < 3  & remainingAgeMature > 1 ~ "FI",
+                                 matureAge >= 3  & remainingAgeMature > 1 ~ "SI"))
+
+```
+
+
+
+### SEEDBANK plants.seedbank
+```{r}
+plants.seedbank <- plants.data %>%
+  filter(sapply(matC, function(x) sum(x)==0)) %>%  ## remove any that call out clonal growth
+  filter(seedbank == "Yes" &
+           !is.na(LifeHistory)) 
+## Fix family errors
+plants.data <- plants.data %>%
+  mutate(SpeciesAccepted = as.character(SpeciesAccepted)) %>%
+  mutate(Family = as.character(Family)) %>%
+  mutate(SpeciesAccepted = replace(SpeciesAccepted, SpeciesAccepted == "Silene Ciliata", "Silene ciliata")) %>%
+  mutate(Family = replace(Family, Family == "Compositae", "Asteraceae")) %>%
+  mutate(Family = replace(Family, Family == "Leguminosae", "Fabaceae")) %>%
+  mutate(Family = replace(Family, Family == "Legumiosae", "Fabaceae")) %>% ## misspelling in Kummerowia striata family
+  mutate(Family = replace(Family, Family == "Dipsacaceae", "Caprifoliaceae")) %>%
+  mutate(Family = replace(Family, Family == "Fzcaceae", "Fucaceae")) %>%
+  mutate(Family = replace(Family, Family == "Scropulariaceae", "Scrophulariaceae"))
+
+```
+
+### Collapse each into seed (prop), vegetative (matF == 0), and reproductive (matF > 0)   
+       Bromus tectorum with 1: fall seedbank, 5: winter seedbank
+       "Solidago altissima" with "old seeds" called an active stage, and then sprout-clones
+       "Lupinus lepidus" has reproduction in all the stages, seeds even, might be transposed?
+
+```{r}    
+
+## name stages by if they are prop, vegetative, reproductive and then collapse = list(seed = "prop", veg = "veg", rep = "rep") stages hold names seed, veg, rep
+
+foo <- plants.seedbank %>%
+  filter(SpeciesAccepted != "Solidago altissima") %>% ## no seed stage
+  mutate(eigenvalues = mapply(function(x) eigen(x)$values, matA)) %>%
+  mutate(stages = lapply(activeclasses, function(x) rep("veg", length(x)))) %>%
+  mutate(stages = mapply(function(x,y) replace(x, which(colSums(y) > 0), "rep"), stages, matF)) %>%
+  mutate(stages = mapply(function(x,y) replace(x, which(y == "prop"), "seed"), stages, activeclasses)) %>%
+  mutate(matU = mapply(function(x,y) name_stages(x, names = y, prefix = ""), matU, stages),
+         matF = mapply(function(x,y) name_stages(x, names = y, prefix = ""), matF, stages)) %>%
+  filter(mapply(function(x) length(which(x == "veg"))>0 , stages)) 
+
+foo2join <- foo@data %>%
+  dplyr::select(SpeciesAccepted, Family, Country:Ecoregion, LifeHistory, 
+                shapeItero:remainingAgeMature, gentime:longevity)%>%
+  distinct() %>%
+  arrange(Family, SpeciesAccepted) %>%
+  mutate(Analysis = "Seed Stage")
+
+multiMats <- plants.data %>%
+  mutate(mat.dims = sapply(matU, function(x) dim(x)[1])) %>%
+  group_by(SpeciesAccepted, LifeHistory, mat.dims) %>%
+  mutate(SpeciesLH = mapply(function(x,y,z) paste0(x,y,z), SpeciesAccepted,LifeHistory, mat.dims)) %>%
+  filter(!is.na(LifeHistory)) %>%
+  mutate(NumMats = n(), .groups = "keep") %>%
+  filter(NumMats > 2)
+
+multiMats2join <- multiMats@data %>%
+  dplyr::select(SpeciesAccepted, Family, Country:Ecoregion, LifeHistory, 
+                shapeItero:remainingAgeMature, gentime:longevity)%>%
+  distinct() %>%
+  arrange(Family, SpeciesAccepted) %>%
+  mutate(Analysis = "Environmental stochasticty")
+
+collapsedmats <- list()
+for(i in c(1:nrow(foo))){
+  print(paste(foo$MatrixID[i],foo$SpeciesAccepted[i],i))
+  collapsedmats[[i]] <- mpm_collapse(foo$matU[[i]], foo$matF[[i]], collapse = list(seed = "seed",
+                                                                      veg = "veg",
+                                                                      rep = "rep"))
+  
+}
+
+fastitero <- collapsedmats[foo$LifeHistory == "FI"]
+fastsemel <- collapsedmats[foo$LifeHistory == "FS"]
+slowitero <- collapsedmats[foo$LifeHistory == "SI"]
+slowsemel <- collapsedmats[foo$LifeHistory == "SS"]
+
+FImatA <- lapply(fastitero, function(x) x$matA)
+FSmatA <- lapply(fastsemel, function(x) x$matA)
+SImatA <- lapply(slowitero, function(x) x$matA)
+SSmatA <- lapply(slowsemel, function(x) x$matA)
+
+FImA <- data.frame(matrix(do.call(c, FImatA), nrow = length(FImatA), byrow = TRUE))
+FSmA <- data.frame(matrix(do.call(c, FSmatA), nrow = length(FSmatA), byrow = TRUE))
+SImA <- data.frame(matrix(do.call(c, SImatA), nrow = length(SImatA), byrow = TRUE))
+SSmA <- data.frame(matrix(do.call(c, SSmatA), nrow = length(SSmatA), byrow = TRUE))
+
+## Reproduction; birth matrices
+FImatF <- lapply(fastitero, function(x) x$matF)
+FSmatF <- lapply(fastsemel, function(x) x$matF)
+SImatF <- lapply(slowitero, function(x) x$matF)
+SSmatF <- lapply(slowsemel, function(x) x$matF)
+
+FImF <- data.frame(matrix(do.call(c, FImatF), nrow = length(FImatF), byrow = TRUE))
+FSmF <- data.frame(matrix(do.call(c, FSmatF), nrow = length(FSmatF), byrow = TRUE))
+SImF <- data.frame(matrix(do.call(c, SImatF), nrow = length(SImatF), byrow = TRUE))
+SSmF <- data.frame(matrix(do.call(c, SSmatF), nrow = length(SSmatF), byrow = TRUE))
+
+FImatU <- lapply(fastitero, function(x) x$matU)
+FSmatU <- lapply(fastsemel, function(x) x$matU)
+SImatU <- lapply(slowitero, function(x) x$matU)
+SSmatU <- lapply(slowsemel, function(x) x$matU)
+
+## All the death matrices (with transitions (0,1]) are estimated by a beta distribution == LHm
+FIm <- data.frame(matrix(do.call(c, FImatU), nrow = length(FImatU), byrow = TRUE))
+FSm <- data.frame(matrix(do.call(c, FSmatU), nrow = length(FSmatU), byrow = TRUE))
+SIm <- data.frame(matrix(do.call(c, SImatU), nrow = length(SImatU), byrow = TRUE))
+SSm <- data.frame(matrix(do.call(c, SSmatU), nrow = length(SSmatU), byrow = TRUE))
+## stage transitions
+trans <- c("s-s","s-v","s-r","v-s","v-v","v-r","r-s","r-v","r-r")
+names(FIm) <- trans
+names(FSm) <- trans
+names(SIm) <- trans
+names(SSm) <- trans
+
+names(FImA) <- trans
+names(FSmA) <- trans
+names(SImA) <- trans
+names(SSmA) <- trans
+names <- c("Fast iteroparous","Fast semelparous","Slow iteroparous","Slow semelparous")
+
+vitalratecorrelations <- lapply(list(FImA,FSmA,SImA,SSmA), function(LH){
+  cortests <- do.call(rbind,apply(combn(1:9, 2), 2, function(x){ 
+    ct <- cor.test(LH[,x[1]], LH[,x[2]])
+    data.frame(compare = paste(names(LH)[x[1]], names(LH)[x[2]], sep = "_"), 
+               cor = ct$estimate, CI95Lower = ct$conf.int[1], CI95Upper = ct$conf.int[2])
+                    }))
+  cortests
+  })
+
+vrc <- lapply(1:4, function(x) data.frame(LifeHistory = names[x], vitalratecorrelations[[x]]))
+vrc <- do.call(rbind, vrc)
+# vrc <- vrc[complete.cases(vrc),]
+corParams <- vrc %>%
+  group_by(LifeHistory, compare) %>%
+  summarize(corAvg = mean(cor),
+         CILAvg = mean(CI95Lower), 
+         CIUAvg = mean(CI95Upper), .groups = "keep")
+
+## correlation of survival, growth, retrogression, and reproduction
+vitalrates.LH <- plants.seedbank %>%
+  # group_by(LifeHistory, SpeciesAccepted, MatrixID) %>%
+  mutate(surv = mapply(vr_vec_survival, matU)) %>%
+  mutate(grow = mapply(vr_vec_growth, matU, exclude = exc.IDs)) %>%
+  mutate(shrink = mapply(vr_vec_shrinkage, matU, exclude = exc.IDs)) %>%
+  mutate(stasis = mapply(vr_vec_stasis, matU)) %>%
+  mutate(repro = mapply(vr_vec_reproduction, matU, matF))
+
+### Beta distribution on transition rates
+LHm <- lapply(1:4, function(i) data.frame(LifeHistory = names[i], list(FIm,FSm,SIm,SSm)[[i]]))
+LHm <- do.call(rbind,LHm)
+
+### Poisson distribution on the fecundity
+LHmbirth <- lapply(1:4, function(i) data.frame(LifeHistory = names[i], list(FImF,FSmF,SImF,SSmF)[[i]]))
+LHmbirth <- do.call(rbind,LHmbirth)
+names(LHmbirth) <- c("LifeHistory","ss","sv","sr","vs","vv","vr","rs","rv","rr")
+colSums(LHmbirth[,-1])
+LHmbirth <- LHmbirth[,c(1,8:9)]
+
+# parameters of beta distribution of seed to seed for fast iteroparous
+## should be 16 rows
+# LHm[LHm == 0] <- 0.0001
+betaParams <- LHm %>%
+  dplyr::select(-c(s.r,v.s,r.s)) %>%
+  group_by(LifeHistory) %>% ## Reproductive to seed is a poisson and not a beta
+  pivot_longer(cols = s.s:r.r, names_to = "transition", values_to = "vitalrate") %>%
+  filter(vitalrate != 0) %>% ## beta for [0,1]
+  ungroup() %>%
+  group_by(LifeHistory, transition) %>%
+  summarise(beta1 = EnvStats::ebeta(vitalrate)$parameters[1],
+         beta2 = EnvStats::ebeta(vitalrate)$parameters[2], .groups = "keep")  ## throws errors for zero 
+         
+trans <- unique(betaParams$transition)
+p <- seq(0,1,length=100)
+betaDist <- betaParams %>%
+  group_by(LifeHistory, transition) %>%
+  summarise(db = dbeta(p, beta1, beta2), .groups = "keep") 
+
+betaDist <- data.frame(betaDist, p)
+
+
+vitalrates <- ggplot(betaDist, aes(p, db, color = LifeHistory))+
+  geom_line(linewidth = 1)+
+  xlim(c(0.00001, 0.99999))+
+  facet_wrap(~transition, scales = "free_y",
+             labeller = as_labeller(c("s.s" = "Soil Seed Bank",
+                                      "s.v" = "Germination",
+                                      "v.r" = "Maturation",
+                                      "v.v" = "Survival of Vegetative",
+                                      "r.r" = "Survival of Reproductive",
+                                      "r.v" = "Retrogression")))+
+  scale_color_manual("Life history", values = c(fi,fs,si,ss))+
+  ylab("PDF")+
+  xlab("transition rate")+
+  theme_bw()+
+  ggtitle("c)")
+
+       
+((plants.data %>%
+  filter(!is.na(LifeHistory)) %>%
+  ggplot( aes(log(matureAge), log(gentime), color = LifeHistory,
+              fill = LifeHistory, shape = LifeHistory))+
+  geom_point()+
+  scale_color_manual("Life history",
+                     breaks = c("FI","FS","SI","SS"),
+                     labels = c("Fast iteroparous","Fast semelparous",
+                                "Slow iteroparous", "Slow Semelparous"),
+                     values = c("FI"= fi, "FS"=fs,"SI"=si,"SS"=ss),
+                     guide="none")+
+  scale_fill_manual("Life history",
+                     breaks = c("FI","FS","SI","SS"),
+                     labels = c("Fast iteroparous","Fast semelparous",
+                                "Slow iteroparous", "Slow Semelparous"),
+                     values = c("FI"= fi, "FS"=fs,"SI"=si,"SS"=ss),
+                     guide="none")+
+  scale_shape_manual("Life history",
+                     breaks = c("FI","FS","SI","SS"),
+                     labels = c("Fast iteroparous","Fast semelparous",
+                                "Slow iteroparous", "Slow Semelparous"),
+                     values = c("FI" =4,"FS"=21,"SI"=4,"SS"=21),
+                     guide="none")+
+
+  xlab("log(Age of maturity)")+
+  ylab("log(Generation time)")+
+  theme_bw()+
+  geom_abline(slope = 1, intercept = 0)+
+    ggtitle("a)"))
+
++
+
+(  plants.data %>%
+  filter(!is.na(LifeHistory)) %>%
+  ggplot( aes(LifeHistory, log(growthrate), color = LifeHistory))+
+    geom_boxplot()+
+    geom_jitter(size = 0.75)+
+    # geom_hline(yintercept = 1, col = "grey50", linetype = "dashed")+
+    geom_hline(yintercept = 0, col = "grey50", linetype = "dashed")+
+    theme_bw()+
+  scale_color_manual("Life history",
+                     breaks = c("FI","FS","SI","SS"),
+                     labels = c("Fast iteroparous","Fast semelparous",
+                                "Slow iteroparous", "Slow Semelparous"),
+                     values = c("FI"= fi, "FS"=fs,"SI"=si,"SS"=ss))+
+    ggtitle("b)")))  + 
+ (vitalrates) + plot_layout(widths = c(1.25,1.5,4))
+
+
+```
+

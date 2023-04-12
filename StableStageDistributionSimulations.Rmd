@@ -1,0 +1,332 @@
+---
+title: "Categorizing plants by age of maturity and duration of reproduction"
+author: "Michelle DePrenger-Levin"
+date: "2022-10-28"
+output: html_document
+---
+
+## Stable stage distribution
+Shape of reproduction (𝑆 in Baudisch & Stott, 2019)
+
+```{r}
+rm(list=ls()) 
+library(popbio)
+library(popdemo)
+library(ggplot2)
+library(tidyr)
+library(dplyr)
+
+fi <- "blue"
+si <- "brown"
+fs <- "chartreuse4"
+ss <- "goldenrod3"
+```
+
+
+#Asymptotic
+```{r}
+plants.data %>%
+  filter(is.na(LifeHistory))
+## 6 SPECIES and 8 MATRICES
+
+## What are the two outliers that will be removed
+outliers <- plants.data %>%
+  filter(shapeItero > 0.25) %>%
+  filter(!is.na(LifeHistory))
+as.data.frame(outliers)
+
+## Remove the two outliers that are at the early in life reproduction that then tapers off, 
+# 262 SPECIES and 1173 MATRICES
+plants.data <- plants.data %>%
+  filter(shapeItero < 0.25) %>%
+  filter(!is.na(LifeHistory))
+
+
+## Just do each, no variation -- no, bootstrap/resampling
+EP_asymptotic <- do.call(rbind,lapply(c(1,10,100,500,1000), function(stpopsz){
+  out <- do.call(rbind, lapply(1:1e4, function(x){
+    ind <- sample(1:length(plants.data$MatrixID),1)
+    # an empty vector of numbers in stage
+    n <- matrix(rep(0,length(plants.data$activeclasses[[ind]])), ncol = 1, byrow = TRUE)  
+    ## stable.stage start
+    ssd <- stable.stage(plants.data$matA[[ind]])
+    n[,1] <- round(stpopsz*ssd,0)
+    if(sum(n[,1])==0) n[,1][which.max(ssd)] <- stpopsz
+    Time2Ext <- NA
+    for(yr in 1:100){
+      n_t1 <- floor(plants.data$matA[[ind]] %*% n[,yr])
+      if(sum(n_t1)==0){  
+        Time2Ext <- yr+1
+        break
+        }
+      n <- cbind(n,n_t1)
+      }
+    data.frame(Time2Ext, start = "SSD_Asymptotic", StPopSz = stpopsz, LH = plants.data$LifeHistory[ind],
+               DegreeItero = plants.data$DegreeItero[ind], 
+               ShapeItero = plants.data$shapeItero[ind],
+               AgeMature = plants.data$matureAge[ind],
+               MatrixID = plants.data$MatrixID[ind])
+    })) ## end replicates
+  out
+  }))
+
+```
+
+
+
+
+# Demographic
+```{r}
+
+EP_binomPoisson <- do.call(rbind,lapply(c(1,10,100,500,1000), function(stpopsz){
+  out <- do.call(rbind, lapply(1:10000, function(x_rep){
+      ind <- sample(1:length(plants.data$matA),1)
+      n <- matrix(rep(0,length(plants.data$activeclasses[[ind]])), ncol = 1, byrow = TRUE) # an empty vector of numbers in stage 
+      ## stable.stage start
+      ssd <- stable.stage(plants.data$matA[[ind]])
+      n[,1] <- round(stpopsz*ssd,0)
+      if(sum(n[,1])==0) n[which.max(ssd)] <- stpopsz
+      Time2Ext <- NA
+      for(yr in 1:100){
+        if(nrow(n)>1){
+        grow_surv <- colSums(apply(plants.data$matU[[ind]],1,function(m_row) {
+          sapply(1:length(plants.data$activeclasses[[ind]]), function(x){
+            rbinom(1, size = n[x,yr], prob = m_row[x])
+            })
+          }))
+        fert <- colSums(apply(plants.data$matF[[ind]], 1, function(m_row) {
+          sapply(1:length(plants.data$activeclasses[[ind]]), function(x){
+            rpois(1, m_row[x]*n[x,yr])
+          })
+        }))
+        } else {
+          grow_surv <- rbinom(1, size = n[,yr], prob = plants.data$matU[[ind]])
+          fert <- rpois(1, plants.data$matF[[ind]]*n[,yr])
+        }
+        if(sum(grow_surv+fert) == 0 | is.na(sum(grow_surv+fert))){ 
+          Time2Ext <- yr
+          break
+          }
+        n <- cbind(n,grow_surv + fert)
+        }
+      data.frame(Time2Ext, start = "SSD_demographic", StPopSz = stpopsz, LH = plants.data$LifeHistory[ind],
+                 DegreeItero = plants.data$DegreeItero[ind], AgeMature = plants.data$matureAge[ind],
+                 MatrixID = plants.data$MatrixID[ind])
+      })) ## end replicates
+  out
+}))
+
+```
+
+
+## Environmental variation
+```{r}
+multiMats <- plants.data %>%
+  mutate(mat.dims = sapply(matU, function(x) dim(x)[1])) %>%
+  group_by(SpeciesAccepted, LifeHistory, mat.dims) %>%
+  mutate(SpeciesLH = mapply(function(x,y,z) paste0(x,y,z), SpeciesAccepted,LifeHistory, mat.dims)) %>%
+  filter(!is.na(LifeHistory)) %>%
+  mutate(NumMats = n(), .groups = "keep") %>%
+  filter(NumMats > 2)
+
+length(table(multiMats$SpeciesLH))
+
+multiMats %>%
+  group_by(SpeciesAccepted, LifeHistory, mat.dims) %>%
+  summarise(NumMats = n()) %>%
+  print(n=200)
+
+multiMats %>%
+  group_by(SpeciesAccepted, LifeHistory) %>%
+  mutate(NumMats = n(), .groups = "keep") %>%
+  filter(NumMats > 2) %>%
+  group_by(LifeHistory) %>%
+  summarise(n_distinct(SpeciesAccepted))
+
+EP_environ <- do.call(rbind,lapply(c(1,10,100,500,1000), function(stpopsz){
+  out <- do.call(rbind, lapply(1:10000, function(rep.num){
+    splh <- sample(multiMats$SpeciesLH,1)
+    print(splh)
+      ## A list of vectors each the length of stages
+    n <- matrix(rep(0,multiMats$mat.dims[multiMats$SpeciesLH == splh][1], ncol= 1, byrow = TRUE))
+    
+    ## stable.stage start of mean matrix
+    ssd <- stable.stage(mean(multiMats$matA[multiMats$SpeciesLH == splh]))
+    
+    n[,1] <- round(stpopsz*ssd,0)
+    if(sum(n)==0) n[which.max(ssd),1] <- stpopsz
+    
+    Time2Ext <- NA
+    for(yr in 1:100){
+      matA <- sample(multiMats$matA[multiMats$SpeciesLH == splh],1)[[1]]
+      n_t1 <- floor(matA %*% n[,yr])
+      n <- cbind(n,n_t1)
+      if(sum(n_t1) == 0){
+        Time2Ext <- yr
+        break
+      }
+    }
+    
+    data.frame(Time2Ext, start = "SSD_environ", StPopSz = stpopsz, 
+               LH = multiMats$LifeHistory[multiMats$SpeciesLH == splh][1],
+               DegreeItero = mean(multiMats$DegreeItero[multiMats$SpeciesLH == splh]), 
+               ShapeItero = mean(multiMats$shapeItero[multiMats$SpeciesLH == splh]),
+               AgeMature = mean(multiMats$matureAge[multiMats$SpeciesLH == splh]),
+               MatrixID = paste(multiMats$MatrixID[multiMats$SpeciesLH == splh],
+                                collapse = "_"))
+      })) ## end replicates
+  out
+}))
+
+```
+
+
+
+
+## Environemntal and demographic variation
+```{r}
+multiMats <- plants.data %>%
+  mutate(mat.dims = sapply(matU, function(x) dim(x)[1])) %>%
+  group_by(SpeciesAccepted, LifeHistory, mat.dims) %>%
+  mutate(SpeciesLH = mapply(function(x,y,z) paste0(x,y,z), SpeciesAccepted,LifeHistory, mat.dims)) %>%
+  filter(!is.na(LifeHistory)) %>%
+  mutate(NumMats = n(), .groups = "keep") %>%
+  filter(NumMats > 2)
+
+multiMats %>%
+  group_by(SpeciesAccepted, LifeHistory, mat.dims) %>%
+  summarise(NumMats = n()) %>%
+  print(n=200)
+
+EP_environdemo <- do.call(rbind,lapply(c(1,10,100,500,1000), function(stpopsz){
+  out <- do.call(rbind, lapply(1:10000, function(rep.num){
+    splh <- sample(multiMats$SpeciesLH,1)
+    print(splh)
+      ## A list of vectors each the length of stages
+    n <- matrix(rep(0,multiMats$mat.dims[multiMats$SpeciesLH == splh][1], ncol= 1, byrow = TRUE))
+    
+    ## stable.stage start of mean matrix
+    ssd <- stable.stage(mean(multiMats$matA[multiMats$SpeciesLH == splh]))
+    
+    n[,1] <- round(stpopsz*ssd,0)
+    if(sum(n)==0) n[which.max(ssd),1] <- stpopsz
+    
+    Time2Ext <- NA
+    for(yr in 1:100){
+      ind <- sample(1:length(multiMats$matU[multiMats$SpeciesLH == splh]),1)
+      if(nrow(n)>1){
+        grow_surv <- colSums(apply(multiMats$matU[multiMats$SpeciesLH == splh][[ind]],1,function(m_row) {
+            sapply(1:multiMats$mat.dims[multiMats$SpeciesLH == splh][[1]], function(x){
+              rbinom(1, size = n[x,yr], prob = m_row[x])
+              })
+            }))
+          fert <- colSums(apply(multiMats$matF[multiMats$SpeciesLH == splh][[ind]], 1, function(m_row) {
+            sapply(1:multiMats$mat.dims[multiMats$SpeciesLH == splh][[1]], function(x){
+              min(rpois(1, m_row[x]*n[x,yr]),1e9) ## NAs if value too large
+            })
+          }))
+          } else {
+            grow_surv <- rbinom(1, size = n[,yr], prob = multiMats$matU[multiMats$SpeciesLH == splh][[ind]])
+            fert <- rpois(1, multiMats$matF[multiMats$SpeciesLH == splh][[ind]]*n[,yr])
+          }
+          if(sum(grow_surv+fert) == 0){ 
+            Time2Ext <- yr
+            break
+            }
+          n <- cbind(n,grow_surv + fert)
+        }
+  
+        data.frame(Time2Ext, start = "SSD_environdemo", StPopSz = stpopsz, 
+                   LH = multiMats$LifeHistory[multiMats$SpeciesLH == splh][1],
+                   DegreeItero = mean(multiMats$DegreeItero[multiMats$SpeciesLH == splh]), 
+               ShapeItero = mean(multiMats$shapeItero[multiMats$SpeciesLH == splh]), 
+                   AgeMature = mean(multiMats$matureAge[multiMats$SpeciesLH == splh]),
+                   MatrixID = paste(multiMats$MatrixID[multiMats$SpeciesLH == splh],
+                                    collapse = "_"))
+      })) ## end replicates
+  out
+}))
+
+```
+
+
+
+
+
+Figure 1  Figure1SSD_categorical, width=150, height=100, units='mm', dpi=300
+```{r}
+
+EP_binomPoisson %>%
+    left_join(data.frame(plants.data), by = c("MatrixID","DegreeItero")) %>% ## plants.data$shapeItero; EP_environ$ShapeItero
+    dplyr::select(Time2Ext:DegreeItero, shapeItero, AgeMature, MatrixID) %>%
+    rename(ShapeItero = shapeItero) %>%
+    bind_rows(EP_asymptotic) %>%
+    mutate(MatrixID = as.character(MatrixID)) %>%
+    bind_rows(EP_environdemo) %>%
+    bind_rows(EP_environ) %>%
+    mutate(Ext_10yrs = case_when(Time2Ext <= 10 & !is.na(Time2Ext) ~ 1,
+                                 Time2Ext > 10 | is.na(Time2Ext) ~ 0)) %>%
+  mutate(Parity = case_when(LH %in% c("FI","SI") ~ "Itero",
+                            LH %in% c("FS","SS") ~ "Semel")) %>%
+    mutate(Pace = case_when(LH %in% c("FI","FS") ~ "Fast",
+                                LH %in% c("SI","SS") ~ "Slow")) %>%
+    filter(!is.na(Pace)) %>%
+    # rename(PopulationSize = StPopSz) %>%
+ggplot(  aes(log10(StPopSz), Ext_10yrs, color = start))+
+  facet_grid(Parity ~ Pace)+
+    ylab("Probability of Extinction after 10 years")+
+    xlab("log(Starting population size)")+
+    geom_smooth(method = "glm", method.args = list(family = "binomial"),se = TRUE, alpha = 0.5)+
+    theme_bw()+
+  scale_color_manual("Simulation",
+                        breaks = c("SSD_Asymptotic","SSD_demographic",
+                                   "SSD_environ","SSD_environdemo"),
+                     labels = c("Asymptotic","Demographic\nstochasticity",
+                                "Environmental\nstochasticity"," Environmental &\nDemographic\nstochasticity"),
+                     values = c("blue","gold","green","gray90"))
+
+```
+
+
+```{r}
+
+simnames <- list(
+  "SSD_Asymptotic" = "Asymptotic",
+  "SSD_demographic" = "Demographic",
+  "SSD_environ" = "Environmental",
+  "SSD_environdemo" = "Demo & Environ"
+)
+
+simlabeller <- function(variable, value){
+  return(simnames[value])
+}
+
+EP_binomPoisson %>%
+    left_join(data.frame(plants.data), by = c("MatrixID","DegreeItero")) %>% ## plants.data$shapeItero; EP_environ$ShapeItero
+    dplyr::select(Time2Ext:DegreeItero, shapeItero, AgeMature, MatrixID) %>%
+    rename(ShapeItero = shapeItero) %>%
+    bind_rows(EP_asymptotic) %>%
+    mutate(MatrixID = as.character(MatrixID)) %>%
+    bind_rows(EP_environdemo) %>%
+    bind_rows(EP_environ) %>%
+    mutate(Ext_10yrs = case_when(Time2Ext <= 10 & !is.na(Time2Ext) ~ 1,
+                                 Time2Ext > 10 | is.na(Time2Ext) ~ 0)) %>%
+    mutate(Parity = case_when(LH %in% c("FI","SI") ~ "Itero",
+                              LH %in% c("FS","SS") ~ "Semel")) %>%
+    mutate(Pace = case_when(LH %in% c("FI","FS") ~ "Fast",
+                                LH %in% c("SI","SS") ~ "Slow")) %>%
+    filter(!is.na(Pace)) %>%
+ggplot(  aes(log10(StPopSz), Ext_10yrs, color = LH))+
+  facet_wrap(~ start, labeller = simlabeller)+
+    ylab("Probability of Extinction after 10 years")+
+    xlab("log(Starting population size)")+
+    geom_smooth(method = "glm", method.args = list(family = "binomial"),se = TRUE, alpha = 0.5)+
+    theme_bw()+
+  scale_color_manual("Life history",
+                     breaks = c("FI","FS","SI","SS"),
+                     labels = c("Fast iteroparous","Fast semelparous",
+                                "Slow iteroparous", "Slow Semelparous"),
+                     values = c("FI"= fi, "FS"=fs,"SI"=si,"SS"=ss))
+```
+
+

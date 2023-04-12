@@ -1,0 +1,199 @@
+---
+title: "JAGS_variations"
+output: html_document
+date: "2023-03-20"
+---
+
+Packages
+```{r}
+
+library(dplyr)
+library(tidyr)
+
+library(ggplot2)
+library(patchwork)
+
+library(R2jags)
+library(runjags)
+library(mcmcplots)
+library(boot)
+
+
+```
+
+
+```{r}
+
+
+fi <- "blue"
+si <- "brown"
+fs <- "chartreuse4"
+ss <- "goldenrod3"
+
+```
+
+
+COMPADRE data
+```{r}
+
+load("C:/Users/DePrengm/OneDrive - Denver Botanic Gardens/P drive/My Documents/UCDenver_phd/Dissertation/Chapter3/Rdatas/plants_data2022-12-10.Rdata")
+
+```
+
+
+## Add and correct family names for random effects   
+```{r}
+plants.data <- plants.data %>%
+  mutate(SpeciesAccepted = as.character(SpeciesAccepted)) %>%
+  mutate(Family = as.character(Family)) %>%
+  mutate(SpeciesAccepted = replace(SpeciesAccepted, SpeciesAccepted == "Silene Ciliata", "Silene ciliata")) %>%
+  mutate(Family = replace(Family, Family == "Compositae", "Asteraceae")) %>%
+  mutate(Family = replace(Family, Family == "Leguminosae", "Fabaceae")) %>%
+  mutate(Family = replace(Family, Family == "Legumiosae", "Fabaceae")) %>% ## misspelling in Kummerowia striata family
+  mutate(Family = replace(Family, Family == "Dipsacaceae", "Caprifoliaceae")) %>%
+  mutate(Family = replace(Family, Family == "Fzcaceae", "Fucaceae")) %>%
+  mutate(Family = replace(Family, Family == "Scropulariaceae", "Scrophulariaceae")) 
+  
+```
+
+
+
+## Categorization  
+```{r}
+## Semelparous as concentrated reproductive effort
+plants.data <- plants.data %>%
+  mutate(parity = case_when(remainingAgeMature >= 3 ~ "itero",
+                            remainingAgeMature < 3 ~ "semel")) %>%
+  filter(!is.na(remainingAgeMature)) %>%
+  mutate(LifeHistory = case_when(matureAge < 3 & remainingAgeMature < 3 ~ "FS",
+                                 matureAge >= 3  & remainingAgeMature < 3 ~ "SS",
+                                 matureAge < 3  & remainingAgeMature >= 3 ~ "FI",
+                                 matureAge >= 3  & remainingAgeMature >= 3 ~ "SI"))
+
+## Semelparous as one year of reproduction
+plants.dataSI1 <- plants.data %>%
+  mutate(parity = case_when(remainingAgeMature > 1 ~ "itero",
+                            remainingAgeMature <= 1 ~ "semel")) %>%
+  filter(!is.na(remainingAgeMature)) %>%
+  mutate(LifeHistory = case_when(matureAge < 3 & remainingAgeMature <= 1 ~ "FS",
+                                 matureAge >= 3  & remainingAgeMature <= 1 ~ "SS",
+                                 matureAge < 3  & remainingAgeMature > 1.1 ~ "FI",
+                                 matureAge >= 3  & remainingAgeMature > 1.1 ~ "SI"))
+```
+
+
+
+Seed and Seedlings
+```{r}
+## Sample plants.seedbank asymptotic 
+load("C:/Users/DePrengm/OneDrive - Denver Botanic Gardens/P drive/My Documents/UCDenver_phd/Dissertation/Chapter3/Rdatas/Time2Ext_EP2022-11-05.Rdata")
+
+## Sample plants.seedbank demographic stochastic (binomial and Poisson)
+load("C:/Users/DePrengm/OneDrive - Denver Botanic Gardens/P drive/My Documents/UCDenver_phd/Dissertation/Chapter3/Rdatas/demostoch2022-11-15.Rdata")
+
+## sample species with different matrices run simulataneously without demo stoch
+load("C:/Users/DePrengm/OneDrive - Denver Botanic Gardens/P drive/My Documents/UCDenver_phd/Dissertation/Chapter3/Rdatas/environ_portfolio2022-11-05.Rdata")
+
+## Sample species and run all matrices of a life history within simultaneously with demo stoch
+load("C:/Users/DePrengm/OneDrive - Denver Botanic Gardens/P drive/My Documents/UCDenver_phd/Dissertation/Chapter3/Rdatas/environ_portfolio_demo2022-11-15.Rdata")
+
+```
+
+
+```{r}
+Asymp <- Time2Ext_EP %>%
+  mutate(simtype = "Asymptotic") %>%
+  left_join(data.frame(plants.data), by = "MatrixID") %>%
+  dplyr::select(c(Time2Ext:DegreeItero.x, shapeItero, AgeMature, simtype, SpeciesAccepted, Family, Order, Class)) %>%
+  rename(DegreeItero = DegreeItero.x)
+
+demo <- demostoch %>%
+  mutate(simtype = "demoStoch") %>%
+  left_join(data.frame(plants.data), by = "MatrixID") %>%
+  dplyr::select(c(Time2Ext:DegreeItero.x, shapeItero, AgeMature, simtype, SpeciesAccepted, Family, Order, Class)) %>%
+  rename(DegreeItero = DegreeItero.x)
+
+
+environdemo <- environ_portfolio_demo %>%
+  mutate(MatrixID = as.integer(sapply(strsplit(MatrixID,"_"), `[`, 1))) %>%
+  left_join(data.frame(plants.data), by = "MatrixID") %>%
+  mutate(simtype = "environdemo") %>%
+  dplyr::select(c(Time2Ext:DegreeItero.x, ShapeItero, AgeMature, simtype, SpeciesAccepted, Family, Order, Class)) %>%
+  rename(shapeItero = ShapeItero) %>%  ## ShapeItero is what we want, averaged across matrices
+  rename(DegreeItero = DegreeItero.x)
+
+environ <- environ_portfolio %>%
+  mutate(MatrixID = as.integer(sapply(strsplit(MatrixID,"_"), `[`, 1))) %>%
+  left_join(data.frame(plants.data), by = "MatrixID") %>%
+  mutate(simtype = "environ") %>%
+  dplyr::select(c(Time2Ext:DegreeItero.x, ShapeItero, AgeMature, simtype, SpeciesAccepted, Family, Order, Class)) %>%
+  rename(shapeItero = ShapeItero) %>%
+  rename(DegreeItero = DegreeItero.x)
+
+ExtProb_all <- do.call(rbind, list(Asymp, demo, environdemo, environ))
+
+
+summarySeedSeedling_all <- ExtProb_all %>%
+  mutate(Parity = case_when(LH %in% c("FI","SI") ~ "itero",
+                            LH %in% c("FS","SS") ~ "semel")) %>%
+  mutate(Pace = case_when(LH %in% c("FI","FS") ~ "fast",
+                            LH %in% c("SS","SI") ~ "slow")) %>%
+  group_by(LH, start, simtype, StPopSz, Parity, Pace) %>%
+  mutate(Ext_10yrs = case_when(Time2Ext <= 10 & !is.na(Time2Ext) ~ 1,
+                               Time2Ext > 10 | is.na(Time2Ext) ~ 0)) %>%
+  mutate(Ext_100yrs = case_when(Time2Ext <= 100 & !is.na(Time2Ext) ~ 1,
+                               Time2Ext > 100 | is.na(Time2Ext) ~ 0)) %>%
+  ungroup() %>%
+  dplyr::mutate(PopulationSizeScaled = scale(StPopSz)[,1],
+                shapeIteroScaled = scale(shapeItero)[,1])
+
+#### Semelparous as 1 year of reproduction 
+Asymp1 <- Time2Ext_EP %>%
+  mutate(simtype = "Asymptotic") %>%
+  left_join(data.frame(plants.dataSI1), by = "MatrixID") %>%
+  dplyr::select(c(Time2Ext:DegreeItero.x, shapeItero, AgeMature, simtype, SpeciesAccepted, Family, Order, Class)) %>%
+  rename(DegreeItero = DegreeItero.x)
+
+demo1 <- demostoch %>%
+  mutate(simtype = "demoStoch") %>%
+  left_join(data.frame(plants.dataSI1), by = "MatrixID") %>%
+  dplyr::select(c(Time2Ext:DegreeItero.x, shapeItero, AgeMature, simtype, SpeciesAccepted, Family, Order, Class)) %>%
+  rename(DegreeItero = DegreeItero.x)
+
+
+environdemo1 <- environ_portfolio_demo %>%
+  mutate(MatrixID = as.integer(sapply(strsplit(MatrixID,"_"), `[`, 1))) %>%
+  left_join(data.frame(plants.dataSI1), by = "MatrixID") %>%
+  mutate(simtype = "environdemo") %>%
+  dplyr::select(c(Time2Ext:DegreeItero.x, ShapeItero, AgeMature, simtype, SpeciesAccepted, Family, Order, Class)) %>%
+  rename(shapeItero = ShapeItero) %>%  ## ShapeItero is what we want, averaged across matrices
+  rename(DegreeItero = DegreeItero.x)
+
+environ1 <- environ_portfolio %>%
+  mutate(MatrixID = as.integer(sapply(strsplit(MatrixID,"_"), `[`, 1))) %>%
+  left_join(data.frame(plants.dataSI1), by = "MatrixID") %>%
+  mutate(simtype = "environ") %>%
+  dplyr::select(c(Time2Ext:DegreeItero.x, ShapeItero, AgeMature, simtype, SpeciesAccepted, Family, Order, Class)) %>%
+  rename(shapeItero = ShapeItero) %>%
+  rename(DegreeItero = DegreeItero.x)
+
+ExtProb_all1 <- do.call(rbind, list(Asymp1, demo1, environdemo1, environ1))
+
+summarySeedSeedling_all1 <- ExtProb_all1 %>%
+  mutate(Parity = case_when(LH %in% c("FI","SI") ~ "itero",
+                            LH %in% c("FS","SS") ~ "semel")) %>%
+  mutate(Pace = case_when(LH %in% c("FI","FS") ~ "fast",
+                            LH %in% c("SS","SI") ~ "slow")) %>%
+  group_by(LH, start, simtype, StPopSz, Parity, Pace) %>%
+  mutate(Ext_10yrs = case_when(Time2Ext <= 10 & !is.na(Time2Ext) ~ 1,
+                               Time2Ext > 10 | is.na(Time2Ext) ~ 0)) %>%
+  mutate(Ext_100yrs = case_when(Time2Ext <= 100 & !is.na(Time2Ext) ~ 1,
+                               Time2Ext > 100 | is.na(Time2Ext) ~ 0)) %>%
+  ungroup() %>%
+  dplyr::mutate(PopulationSizeScaled = scale(StPopSz)[,1],
+                ShapeIteroScaled = scale(shapeItero)[,1])
+
+```
+
+
+
