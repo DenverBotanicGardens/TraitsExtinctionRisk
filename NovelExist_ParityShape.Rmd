@@ -1,0 +1,774 @@
+---
+title: "Nominal novel and exist shape and parity"
+author: "Michelle DePrenger-Levin"
+date: "2023-06-20"
+output: html_document
+---
+
+
+```{r}
+rm(list=ls()) 
+library(popbio)
+library(popdemo)
+library(tidyr)
+library(dplyr)    
+library(MASS)
+library(rjags)
+library(R2jags)
+
+require(AICcmodavg)
+
+
+fi <- "blue"
+si <- "brown"
+fs <- "chartreuse4"
+ss <- "goldenrod3"
+```
+
+
+Existing populations
+```{r}
+load("C:/Users/DePrengm/OneDrive - Denver Botanic Gardens/P drive/My Documents/UCDenver_phd/Dissertation/Chapter3/Rdatas/plants_data2022-11-14.Rdata")
+
+load("C:/Users/DePrengm/OneDrive - Denver Botanic Gardens/P drive/My Documents/UCDenver_phd/Dissertation/Chapter3/Rdatas/EP_asymptotic2022-11-15.Rdata")
+
+load("C:/Users/DePrengm/OneDrive - Denver Botanic Gardens/P drive/My Documents/UCDenver_phd/Dissertation/Chapter3/Rdatas/EP_environ2022-11-16.Rdata")
+
+load("C:/Users/DePrengm/OneDrive - Denver Botanic Gardens/P drive/My Documents/UCDenver_phd/Dissertation/Chapter3/Rdatas/EP_environdemo2022-11-16.Rdata")
+
+load("C:/Users/DePrengm/OneDrive - Denver Botanic Gardens/P drive/My Documents/UCDenver_phd/Dissertation/Chapter3/Rdatas/EP_binomPoisson2022-11-15.Rdata")
+
+EP_asymptotic_sp <- EP_asymptotic %>%
+  mutate(MatrixID = as.numeric(MatrixID)) %>%
+  left_join(data.frame(plants.data), by = c("MatrixID")) %>%
+  dplyr::select(Time2Ext:LH, ShapeItero, AgeMature, MatrixID, SpeciesAccepted, Family, Order, Class) %>%
+  mutate(SpeciesAccepted = as.factor(SpeciesAccepted),
+         Family = as.factor(Family),
+         Order = as.factor(Order),
+         Class = as.factor(Class)) 
+rm(EP_asymptotic)
+
+## Where ShapeItero is the average across matrices, shapeItero from plants.data for the first matrix
+EP_environ_sp <- EP_environ %>%
+  mutate(MatrixID = as.numeric(sapply(strsplit(MatrixID,"_"), `[`, 1))) %>%
+  left_join(data.frame(plants.data), by = c("MatrixID")) %>%
+  dplyr::select(Time2Ext:LH, ShapeItero, AgeMature, MatrixID, SpeciesAccepted, Family, Order, Class) %>%
+  mutate(SpeciesAccepted = as.factor(SpeciesAccepted),
+         Family = as.factor(Family),
+         Order = as.factor(Order),
+         Class = as.factor(Class))
+rm(EP_environ)
+
+## Where ShapeItero is the average across matrices, shapeItero from plants.data for the first matrix
+EP_environdemo_sp <- EP_environdemo %>%
+  mutate(MatrixID = as.numeric(sapply(strsplit(MatrixID,"_"), `[`, 1))) %>%
+  left_join(data.frame(plants.data), by = c("MatrixID")) %>%
+  dplyr::select(Time2Ext:LH, ShapeItero, AgeMature, MatrixID, SpeciesAccepted, Family, Order, Class) %>%
+  mutate(SpeciesAccepted = as.factor(SpeciesAccepted),
+         Family = as.factor(Family),
+         Order = as.factor(Order),
+         Class = as.factor(Class)) 
+rm(EP_environdemo)
+gc()
+
+summarySimulations <- EP_binomPoisson %>%
+    left_join(data.frame(plants.data), by = c("MatrixID")) %>% 
+    dplyr::select(Time2Ext:LH, shapeItero, AgeMature, MatrixID, SpeciesAccepted, Family, Order, Class) %>%
+  mutate(SpeciesAccepted = as.factor(SpeciesAccepted),
+         Family = as.factor(Family),
+         Order = as.factor(Order),
+         Class = as.factor(Class)) %>%
+    dplyr::rename(ShapeItero = shapeItero) %>% ## Because all others come from the simulation and are ShapeItero
+    bind_rows(EP_asymptotic_sp) %>%
+    # mutate(MatrixID = as.character(MatrixID)) %>%
+    bind_rows(EP_environdemo_sp) %>%
+    bind_rows(EP_environ_sp) %>%
+    mutate(Ext_10yrs = case_when(Time2Ext <= 10 & !is.na(Time2Ext) ~ 1,
+                                 Time2Ext > 10 | is.na(Time2Ext) ~ 0)) %>%
+    mutate(Pace = case_when(LH %in% c("FI","FS") ~ "Fast",
+                                LH %in% c("SI","SS") ~ "Slow")) %>%
+    mutate(Parity = case_when(LH %in% c("FI","SI") ~ "Itero",
+                              LH %in% c("FS","SS") ~ "Semel")) %>%
+    filter(!is.na(Pace)) %>%
+    dplyr::rename(PopulationSize = StPopSz) %>%
+    # group_by(start) %>%
+    ungroup() %>%
+    mutate(StPopSzSD = sd(PopulationSize),
+           StPopSzmean = mean(PopulationSize),
+           ShapeIteroSD = sd(ShapeItero),
+           ShapeIteromean = mean(ShapeItero),
+           AgeMatureSD = sd(AgeMature),
+           AgeMaturemean = mean(AgeMature))  %>%
+    dplyr::mutate(PopulationSizeScaled = scale(PopulationSize)[,1],
+                  ShapeIteroScaled = scale(ShapeItero)[,1],
+                  AgeMatureScaled = scale(AgeMature)[,1])
+
+summarySimulations <- summarySimulations %>%
+  mutate(SpeciesAccepted = as.character(SpeciesAccepted)) %>%
+  mutate(Family = as.character(Family)) %>%
+  mutate(SpeciesAccepted = replace(SpeciesAccepted, SpeciesAccepted == "Silene Ciliata", "Silene ciliata")) %>%
+  mutate(Family = replace(Family, Family == "Compositae", "Asteraceae")) %>%
+  mutate(Family = replace(Family, Family == "Leguminosae", "Fabaceae")) %>%
+  mutate(Family = replace(Family, Family == "Legumiosae", "Fabaceae")) %>% ## misspelling in Kummerowia striata family
+  mutate(Family = replace(Family, Family == "Dipsacaceae", "Caprifoliaceae")) %>%
+  mutate(Family = replace(Family, Family == "Fzcaceae", "Fucaceae")) %>%
+  mutate(Family = replace(Family, Family == "Scropulariaceae", "Scrophulariaceae"))
+```
+
+
+Existing
+## JAGS with group effect of family    
+Shape
+```{r}
+# specify model in BUGS language   
+model10year <- 
+  paste("
+      model {
+        # Likelihood:
+          for(i in 1:N){
+            y[i] ~ dbern(p[i])
+            logit(p[i]) <- b0Family[fam[i]] + 
+                            bPace[fs[i]] + 
+                            bStoch[start[i]] + 
+                            bStPopSz * PopulationSizeScaled[i] +
+                            bShapeItero * shapeI[i] +
+                            bPaceXStPopSz[fs[i]] * PopulationSizeScaled[i] +
+                            bPaceXShape[fs[i]] * shapeI[i] +
+                            bPaceXstart[fs[i],start[i]] +
+                            bStPopSzXShape * PopulationSizeScaled[i] * shapeI[i] +
+                            bStPopSzXStart[start[i]] * PopulationSizeScaled[i] +
+                            bShapeXStart[start[i]] * shapeI[i]
+                            
+          }
+        
+        # Priors 
+        mu_int ~ dnorm(0, 0.0001) # mean hyperparameter for random intercepts
+        sigma_int ~ dunif(0,100)  # SD hyperparameter for random intercepts
+        tau_int <- 1/(sigma_int * sigma_int)  ## precision
+        ## Random effect of Family
+        for(i in 1:nFam){
+          b0Family[i] ~ dnorm(mu_int, tau_int) ##Random intercepts
+        }
+        
+        for(i in 1:2){
+          bPace[i] ~ dunif(-5,5)
+        }
+        
+        ## also index for the interactions!
+        for(i in 1:2){
+          bPaceXStPopSz[i] ~ dunif(-5,5)
+        }
+        
+        for(i in 1:2){
+          bPaceXShape[i] ~ dunif(-5,5)
+        }
+        
+        for(i in 1:4){
+          bStoch[i] ~ dunif(-5,5)
+        }
+
+        for(i in 1:2){
+          for(j in 1:4){
+            bPaceXstart[i,j] ~ dunif(-5,5)
+          }
+        }
+        
+        # bStPopSzXStart
+        for(i in 1:4){
+          bStPopSzXStart[i] ~ dunif(-5,5)
+        }
+        
+        # bShapeXStart
+        for(i in 1:4){
+          bShapeXStart[i] ~ dunif(-5,5)
+        }
+        
+        bStPopSz ~ dunif(-5,5)
+        bShapeItero ~ dunif(-5,5)
+        bStPopSzXShape ~ dunif(-5,5)
+        
+        }")
+writeLines(model10year, "popsize10yrsFamily.jags")
+
+jags.data <- list(y = summarySimulations$Ext_10yrs, N = nrow(summarySimulations),
+                  nFam = length(unique(summarySimulations$Family)),
+                  fam = as.factor(summarySimulations$Family),
+                  PopulationSizeScaled = summarySimulations$PopulationSizeScaled,
+                  fs = as.factor(summarySimulations$Pace),
+                  shapeI = summarySimulations$ShapeIteroScaled,
+                  start = as.factor(summarySimulations$start))
+
+## parameters monitored
+parameters <- c("bPace","bStPopSz","bShapeItero","bStoch",
+                "bPaceXStPopSz","bPaceXShape","bPaceXstart","bShapeXStart",
+                "bStPopSzXStart","bStPopSzXShape")
+# MCMC settings
+ni <- 10000
+nt <- 6
+nb <- 5000
+nc <- 3
+# call JAGS from R
+res1 <- jags(jags.data, inits = NULL, parameters, 
+            "popsize10yrsFamily.jags", n.chains = nc, n.thin = nt, 
+            n.iter = ni, n.burnin = nb,
+            working.directory = getwd()) 
+
+save(res1, file = paste("C:/Users/DePrengm/OneDrive - Denver Botanic Gardens/P drive/My Documents/UCDenver_phd/Dissertation/Chapter3/Rdatas/binomialFamRndm10yrs_SSD10000sample1",Sys.Date(),".Rdata", sep=""))
+
+# load("C:/Users/deprengm/OneDrive - Denver Botanic Gardens/P drive/My Documents/UCDenver_phd/Dissertation/Chapter3/Rdatas/binomialFamRndm10yrs_SSD10000sample12023-06-19.Rdata")
+```
+
+Parity
+```{r}
+# specify model in BUGS language   
+modelExistParity <- 
+  paste("
+      model {
+        # Likelihood:
+          for(i in 1:N){
+            y[i] ~ dbern(p[i])
+            logit(p[i]) <- b0Family[fam[i]] + 
+                            bPace[fs[i]] + 
+                            bParity[Parity[i]] +                  ## Parity: iteroparous 3+ yrs rep, semelparous <3 yrs
+                            bStoch[start[i]] + 
+                            bStPopSz * PopulationSizeScaled[i] +
+                            
+                            bPaceXParity[fs[i],Parity[i]] +
+                            bPaceXstoch[fs[i],start[i]] +
+                            bPaceXStPopSz[fs[i]] * PopulationSizeScaled[i] +
+                            
+                            bParityXStoch[Parity[i],start[i]] +
+                            bParityXStPopSz[Parity[i]] * PopulationSizeScaled[i] + 
+                            
+                            bStPopSzXStoch[start[i]] * PopulationSizeScaled[i] 
+                            
+          }
+        
+        # Priors 
+        mu_int ~ dnorm(0, 0.0001) # mean hyperparameter for random intercepts
+        sigma_int ~ dunif(0,100)  # SD hyperparameter for random intercepts
+        tau_int <- 1/(sigma_int * sigma_int)  ## precision
+        ## Random effect of Family
+        for(i in 1:nFam){
+          b0Family[i] ~ dnorm(mu_int, tau_int) ##Random intercepts
+        }
+        
+        for(i in 1:2){
+          Pacetemp[i] ~ dnorm(0, 0.01)
+        }
+        bPace <- Pacetemp - mean(Pacetemp) ## change in centered Pace
+        
+        for(i in 1:2){
+          Paritytemp[i] ~ dnorm(0, 0.01)
+        }
+        bParity <- Paritytemp - mean(Paritytemp)     
+        
+        for(i in 1:4){
+          Starttemp[i] ~ dnorm(0, 0.01)
+        }
+        bStoch <- Starttemp - mean(Starttemp)
+        
+        bStPopSz ~ dunif(-3,3)
+        
+        for(i in 1:2){
+          for(j in 1:2){
+            paceparitytemp[i,j] ~ dnorm(0, 0.01)
+          }
+        }
+        bPaceXParity <- paceparitytemp - mean(paceparitytemp)
+        
+        for(i in 1:2){
+          for(j in 1:4){
+            bPaceXstarttemp[i,j] ~ dnorm(0, 0.01)
+          }
+        }
+        bPaceXstoch <- bPaceXstarttemp - mean(bPaceXstarttemp)
+
+        for(i in 1:2){
+          PaceXStPopSztemp[i] ~ dnorm(0, 0.01)
+        }
+        bPaceXStPopSz <- PaceXStPopSztemp - mean(PaceXStPopSztemp)
+        
+        for(i in 1:2){
+          for(j in 1:4){
+            paritystochtemp[i,j] ~ dnorm(0, 0.01) 
+          }
+        }
+        bParityXStoch <- paritystochtemp - mean(paritystochtemp)
+
+        for(i in 1:2){
+          parityXstpoptemp[i] ~ dnorm(0, 0.01)
+        }
+        bParityXStPopSz <- parityXstpoptemp - mean(parityXstpoptemp)
+        
+        for(i in 1:4){
+          bStSttemp[i] ~ dnorm(0, 0.01)
+        }
+        bStPopSzXStoch <- bStSttemp - mean(bStSttemp)
+
+        }")
+writeLines(modelExistParity, "modelExistParity.jags")
+
+jags.data <- list(y = summarySimulations$Ext_10yrs, N = nrow(summarySimulations),
+                  nFam = length(unique(summarySimulations$Family)),
+                  fam = as.factor(summarySimulations$Family),
+                  PopulationSizeScaled = summarySimulations$PopulationSizeScaled,
+                  fs = as.factor(summarySimulations$Pace),
+                  Parity = as.factor(summarySimulations$Parity), 
+                  start = as.factor(summarySimulations$start))
+
+## parameters monitored
+parameters <- c("b0Family","mu_int","sigma_int","bPace","bParity","bStoch","bStPopSz",
+                "bPaceXParity","bPaceXStPopSz","bPaceXstoch",
+                "bParityXStoch","bParityXStPopSz",
+                "bStPopSzXStoch")
+# MCMC settings
+ni <- 10000
+nt <- 6
+nb <- 5000
+nc <- 3
+# call JAGS from R
+resExistParity <- jags(jags.data, inits = NULL, parameters, 
+            "ExistParity.jags", n.chains = nc, n.thin = nt, 
+            n.iter = ni, n.burnin = nb,
+            working.directory = getwd()) 
+
+save(resExistParity, file = paste("C:/Users/DePrengm/OneDrive - Denver Botanic Gardens/P drive/My Documents/UCDenver_phd/Dissertation/Chapter3/Rdatas/ExistParity",Sys.Date(),".Rdata", sep=""))
+print(resExistParity, digits = 3)
+## Check convergence 
+# trace plots
+traplot(resExistParity,c("mu_int","sigma_int","bPace","bParity","bStoch","bStPopSz",
+                "bPaceXParity","bPaceXStPopSz","bPaceXstoch",
+                "bParityXStoch","bParityXStPopSz",
+                "bStPopSzXStoch"))
+# posterior distributions
+denplot(resExistParity,c("mu_int","sigma_int","bPace","bParity","bStoch","bStPopSz",
+                "bPaceXParity","bPaceXStPopSz","bPaceXstoch",
+                "bParityXStoch","bParityXStPopSz",
+                "bStPopSzXStoch"))
+
+# load("C:/Users/deprengm/OneDrive - Denver Botanic Gardens/P drive/My Documents/UCDenver_phd/Dissertation/Chapter3/Rdatas/ExistParity2023-06-21.Rdata")
+
+```
+
+
+############################################################################################################
+# Novel  
+
+```{r}
+load("C:/Users/DePrengm/OneDrive - Denver Botanic Gardens/P drive/My Documents/UCDenver_phd/Dissertation/Chapter3/Rdatas/plants_data2022-11-14.Rdata")
+
+## Sample plants.seedbank asymptotic 
+load("C:/Users/DePrengm/OneDrive - Denver Botanic Gardens/P drive/My Documents/UCDenver_phd/Dissertation/Chapter3/Rdatas/Time2Ext_EP2022-11-05.Rdata")
+
+## Sample plants.seedbank demographic stochastic (binomial and Poisson)
+load("C:/Users/DePrengm/OneDrive - Denver Botanic Gardens/P drive/My Documents/UCDenver_phd/Dissertation/Chapter3/Rdatas/demostoch2022-11-15.Rdata")
+
+## sample species with different matrices run simulataneously without demo stoch
+load("C:/Users/DePrengm/OneDrive - Denver Botanic Gardens/P drive/My Documents/UCDenver_phd/Dissertation/Chapter3/Rdatas/environ_portfolio2022-11-05.Rdata")
+
+## Sample species and run all matrices of a life history within simultaneously with demo stoch
+load("C:/Users/DePrengm/OneDrive - Denver Botanic Gardens/P drive/My Documents/UCDenver_phd/Dissertation/Chapter3/Rdatas/environ_portfolio_demo2022-11-15.Rdata")
+
+Asymp <- Time2Ext_EP %>%
+  mutate(simtype = "Asymptotic") %>%
+  left_join(data.frame(plants.data), by = "MatrixID") %>%
+  dplyr::select(c(Time2Ext:DegreeItero.x, shapeItero, AgeMature, simtype, SpeciesAccepted, Family, Order, Class)) %>%
+  rename(DegreeItero = DegreeItero.x)
+
+demo <- demostoch %>%
+  mutate(simtype = "demoStoch") %>%
+  left_join(data.frame(plants.data), by = "MatrixID") %>%
+  dplyr::select(c(Time2Ext:DegreeItero.x, shapeItero, AgeMature, simtype, SpeciesAccepted, Family, Order, Class)) %>%
+  rename(DegreeItero = DegreeItero.x)
+
+
+environdemo <- environ_portfolio_demo %>%
+  mutate(MatrixID = as.integer(sapply(strsplit(MatrixID,"_"), `[`, 1))) %>%
+  left_join(data.frame(plants.data), by = "MatrixID") %>%
+  mutate(simtype = "environdemo") %>%
+  dplyr::select(c(Time2Ext:DegreeItero.x, ShapeItero, AgeMature, simtype, SpeciesAccepted, Family, Order, Class)) %>%
+  rename(shapeItero = ShapeItero) %>%  ## ShapeItero is what we want, averaged across matrices
+  rename(DegreeItero = DegreeItero.x)
+
+environ <- environ_portfolio %>%
+  mutate(MatrixID = as.integer(sapply(strsplit(MatrixID,"_"), `[`, 1))) %>%
+  left_join(data.frame(plants.data), by = "MatrixID") %>%
+  mutate(simtype = "environ") %>%
+  dplyr::select(c(Time2Ext:DegreeItero.x, ShapeItero, AgeMature, simtype, SpeciesAccepted, Family, Order, Class)) %>%
+  rename(shapeItero = ShapeItero) %>%
+  rename(DegreeItero = DegreeItero.x)
+
+ExtProb_all <- do.call(rbind, list(Asymp, demo, environdemo, environ))
+
+summarySeedSeedling_all <- ExtProb_all %>%
+  mutate(Parity = case_when(LH %in% c("FI","SI") ~ "itero",
+                            LH %in% c("FS","SS") ~ "semel")) %>%
+  mutate(Pace = case_when(LH %in% c("FI","FS") ~ "fast",
+                            LH %in% c("SS","SI") ~ "slow")) %>%
+  group_by(LH, start, simtype, StPopSz, Parity, Pace) %>%
+    mutate(Ext_10yrs = case_when(Time2Ext <= 10 & !is.na(Time2Ext) ~ 1,
+                                 Time2Ext > 10 | is.na(Time2Ext) ~ 0)) %>%
+  ungroup() %>%
+    dplyr::mutate(PopulationSizeScaled = scale(StPopSz)[,1],
+                  ShapeIteroScaled = scale(shapeItero)[,1])
+
+summarySeedSeedling_all <- summarySeedSeedling_all %>%
+  mutate(SpeciesAccepted = as.character(SpeciesAccepted)) %>%
+  mutate(Family = as.character(Family)) %>%
+  mutate(SpeciesAccepted = replace(SpeciesAccepted, SpeciesAccepted == "Silene Ciliata", "Silene ciliata")) %>%
+  mutate(Family = replace(Family, Family == "Compositae", "Asteraceae")) %>%
+  mutate(Family = replace(Family, Family == "Leguminosae", "Fabaceae")) %>%
+  mutate(Family = replace(Family, Family == "Legumiosae", "Fabaceae")) %>% ## misspelling in Kummerowia striata family
+  mutate(Family = replace(Family, Family == "Dipsacaceae", "Caprifoliaceae")) %>%
+  mutate(Family = replace(Family, Family == "Fzcaceae", "Fucaceae")) %>%
+  mutate(Family = replace(Family, Family == "Scropulariaceae", "Scrophulariaceae"))
+```
+
+
+## SD pop size  
+```{r}
+sd(summarySeedSeedling_all$StPopSz)  ## 384.9776
+length(unique(summarySeedSeedling_all$Family))
+
+```
+
+
+Population history: Novel population
+Parity
+JAGS binomial regression with plant family as random effect    
+```{r}
+
+# specify model in BUGS language   
+modelNovelParity <- 
+  paste("
+      model {
+        # Likelihood:
+          for(i in 1:N){
+            y[i] ~ dbern(p[i])
+            logit(p[i]) <- b0Family[fam[i]] + 
+                            bPace[fs[i]] +         ## two
+                            bStoch[simtype[i]] +   ## four
+                            bStage[stage[i]] +     ## two
+                            bStPopSz * PopulationSizeScaled[i] +
+                            bParity[si[i]] +       ## two
+                          ## Pace interactions
+                            bPaceXStoch[fs[i],simtype[i]] +
+                            bPaceXStage[fs[i], stage[i]] +
+                            bPaceXStPopSz[fs[i]] * PopulationSizeScaled[i] +
+                            bPaceXParity[fs[i], si[i]] +
+                          ## Stoch interactions
+                            bStochXStage[simtype[i], stage[i]] +
+                            bStochXStPopSz[simtype[i]] * PopulationSizeScaled[i] +
+                            bStochXParity[simtype[i], si[i]] +
+                          ## Stage interactions
+                            bStageXStPopSz[stage[i]] * PopulationSizeScaled[i] +
+                            bStageXParity[stage[i], si[i]] +
+                          ## StPopSz interaction
+                            bStPopSzXParity[si[i]] * PopulationSizeScaled[i] 
+          }
+        
+        # Priors 
+        mu_int ~ dnorm(0, 0.0001) # mean hyperparameter for random intercepts
+        sigma_int ~ dunif(0,100)  # SD hyperparameter for random intercepts
+        tau_int <- 1/(sigma_int * sigma_int)  ## precision
+        ## Random effect of Family
+        for(i in 1:nFam){
+          b0Family[i] ~ dnorm(mu_int, tau_int) ##Random intercepts
+        }
+        
+        for(i in 1:2){
+          Pacetemp[i] ~ dnorm(0, 0.01)
+        }
+        bPace <- Pacetemp - mean(Pacetemp) ## change in centered Pace
+        
+        for(i in 1:4){
+          Starttemp[i] ~ dnorm(0, 0.01)
+        }
+        bStoch <- Starttemp - mean(Starttemp)
+        
+        for(i in 1:2){
+          stagetemp[i] ~ dnorm(0, 0.01)
+        }
+        bStage <- stagetemp - mean(stagetemp)
+                
+        bStPopSz ~ dunif(-3,3)
+        
+        for(i in 1:2){
+          Paritytemp[i] ~ dnorm(0, 0.01)
+        }
+        bParity <- Paritytemp - mean(Paritytemp)
+        
+      ## Pace interactions
+        for(i in 1:2){
+          for(j in 1:4){
+            bPaceXstochtemp[i,j] ~ dnorm(0, 0.01)
+          }
+        }
+        bPaceXStoch <- bPaceXstochtemp - mean(bPaceXstochtemp)
+        
+        for(i in 1:2){
+          for(j in 1:2){
+            pacestagetemp[i,j] ~ dnorm(0, 0.01)
+          }
+        }
+        bPaceXStage <- pacestagetemp - mean(pacestagetemp)
+        
+        for(i in 1:2){
+          PaceXStPopSztemp[i] ~ dnorm(0, 0.01)
+        }
+        bPaceXStPopSz <- PaceXStPopSztemp - mean(PaceXStPopSztemp)
+        
+        for(i in 1:2){
+          for(j in 1:2){
+            PaceXParitytemp[i,j] ~ dnorm(0, 0.01)
+          }
+        }
+        bPaceXParity <- PaceXParitytemp - mean(PaceXParitytemp)
+        
+      ## Stoch interactions
+        for(i in 1:4){
+          for(j in 1:2){
+            stochstage[i, j] ~ dnorm(0, 0.01)
+          }
+        }
+        bStochXStage <- stochstage - mean(stochstage)
+        
+        for(i in 1:4){
+          stochstpop[i] ~ dnorm(0, 0.01)
+        }
+        bStochXStPopSz <- stochstpop - mean(stochstpop)
+        
+        for(i in 1:4){
+          for(j in 1:2){
+            stochparity[i, j] ~ dnorm(0, 0.01)
+          }
+        }
+        bStochXParity <- stochparity - mean(stochparity)
+        
+      ## Stage interactions 
+        for(i in 1:2){
+          stagestpop[i] ~ dnorm(0, 0.01)
+        }
+        bStageXStPopSz <- stagestpop - mean(stagestpop)
+        
+        for(i in 1:2){
+          for(j in 1:2){
+            stageparity[i,j] ~ dnorm(0, 0.01)
+          }
+        }
+        bStageXParity <- stageparity - mean(stageparity)
+
+      ## PopSz interactions       
+        for(i in 1:2){
+          bStParitytemp[i] ~ dnorm(0, 0.01)
+        }
+        bStPopSzXParity <- bStParitytemp - mean(bStParitytemp)
+
+        }")
+writeLines(modelNovelParity, "modelNovelParity.jags")
+jags.data <- list(y = summarySeedSeedling_all$Ext_10yrs, N = nrow(summarySeedSeedling_all),
+                  nFam = length(unique(summarySeedSeedling_all$Family)),
+                  fam = as.factor(summarySeedSeedling_all$Family),
+                  PopulationSizeScaled = summarySeedSeedling_all$PopulationSizeScaled,
+                  fs = as.factor(summarySeedSeedling_all$Pace),
+                  si = as.factor(summarySeedSeedling_all$Parity),
+                  simtype = as.factor(summarySeedSeedling_all$simtype),
+                  stage = as.factor(summarySeedSeedling_all$start))
+## parameters monitored
+parameters <- c("b0Family","mu_int","sigma_int","bPace","bStPopSz","bStage","bStoch","bParity",
+                "bPaceXStoch","bPaceXStage","bPaceXStPopSz","bPaceXParity",
+                "bStochXStage","bStochXStPopSz","bStochXParity",
+                "bStageXStPopSz","bStageXParity")
+# MCMC settings
+ni <- 10000
+nt <- 6
+nb <- 5000
+nc <- 3
+# call JAGS from R
+resNovelParity <- jags(jags.data, inits = NULL, parameters, 
+            "modelNovelParity.jags", n.chains = nc, n.thin = nt, 
+            n.iter = ni, n.burnin = nb,
+            working.directory = getwd()) 
+save(resNovelParity, file = paste("C:/Users/DePrengm/OneDrive - Denver Botanic Gardens/P drive/My Documents/UCDenver_phd/Dissertation/Chapter3/Rdatas/modelNovelParity",Sys.Date(),"..Rdata", sep=""))
+print(resSeed, digits = 3)
+## Check convergence 
+# trace plots
+traplot(resNovelParity,c("bPace","bStPopSz","bStage","bStoch","bParity",
+                "bPaceXStoch","bPaceXStage","bPaceXStPopSz","bPaceXParity",
+                "bStochXStage","bStochXStPopSz","bStochXParity",
+                "bStageXStPopSz","bStageXParity"))
+# posterior distributions
+denplot(resNovelParity,c("bPace","bStPopSz","bStage","bStoch","bParity",
+                "bPaceXStoch","bPaceXStage","bPaceXStPopSz","bPaceXParity",
+                "bStochXStage","bStochXStPopSz","bStochXParity",
+                "bStageXStPopSz","bStageXParity"))
+```
+
+Shape    
+```{r}
+# specify model in BUGS language   
+modelNovelShape <- 
+  paste("
+      model {
+        # Likelihood:
+          for(i in 1:N){
+            y[i] ~ dbern(p[i])
+            logit(p[i]) <- b0Family[fam[i]] + 
+            
+                            bPace[Pace[i]] +                      ## Pace: fast age of rep < 3yrs or slow age of rep 3+
+                            bStPopSz * StPopSz[i] +  ## scaled and centered, 1, 10, 50, 100, 1000
+                            bShapeItero * shapeI[i] +             ## ShapeItero: -0.5 to 0.5, scaled and centered
+                            bStage[start[i]] +                    ## founding population stage: seed, seedling                    
+                            bStoch[simtype[i]] +                  ## stochasticity: Asymptotic, demographic, [1] environ [2] environdemo
+                            
+                            bPaceXStPopSz[Pace[i]] * StPopSz[i] +
+                            bPaceXShape[Pace[i]] * shapeI[i] +
+                            bPaceXStage[Pace[i],start[i]] + 
+                            bPaceXStoch[Pace[i],simtype[i]] +
+                            
+                            bStPopSzXShape * StPopSz[i] * shapeI[i] +
+                            bStPopSzXStart[start[i]] * StPopSz[i] +
+                            bStPopSzXStoch[simtype[i]] * StPopSz[i] +
+                            
+                            bShapeXStart[start[i]] * shapeI[i] +
+                            bShapeXStoch[simtype[i]] * shapeI[i] +
+                            
+                            bStageXStoch[start[i],simtype[i]]
+                            
+          }
+        
+        # Priors 
+        mu_int ~ dnorm(0, 0.0001) # mean hyperparameter for random intercepts
+        sigma_int ~ dunif(0,100)  # SD hyperparameter for random intercepts
+        tau_int <- 1/(sigma_int * sigma_int)  ## precision
+        ## Random effect of Family
+        for(i in 1:nFam){
+          b0Family[i] ~ dnorm(mu_int, tau_int) ##Random intercepts
+        }
+        
+        for(i in 1:2){
+          Pacetemp[i] ~ dnorm(0, 0.01)
+        }
+        bPace <- Pacetemp - mean(Pacetemp) ## change in centered Pace
+                
+        bStPopSz ~ dunif(-3,3)
+        
+        bShapeItero ~ dunif(-3,3)
+        
+        ## stage seed, seedling
+        for(i in 1:2){
+          stagetemp[i] ~ dnorm(0, 0.01)
+        }
+        bStage <- stagetemp - mean(stagetemp)
+        
+        for(i in 1:4){
+          Starttemp[i] ~ dnorm(0, 0.01)
+        }
+        bStoch <- Starttemp - mean(Starttemp) 
+        
+        for(i in 1:2){
+          PaceXStPopSztemp[i] ~ dnorm(0, 0.01)
+        }
+        bPaceXStPopSz <- PaceXStPopSztemp - mean(PaceXStPopSztemp)
+        
+        for(i in 1:2){
+          PaceXShapetemp[i] ~ dnorm(0, 0.01)
+        }
+        bPaceXShape <- PaceXShapetemp - mean(PaceXShapetemp)
+        
+        for(i in 1:2){
+          for(j in 1:2){
+            PaceStagetemp[i,j] ~ dnorm(0,0.01)
+          }
+        }
+        bPaceXStage <- PaceStagetemp - mean(PaceStagetemp)
+        
+        for(i in 1:2){
+          for(j in 1:4){
+            bPaceXStochtemp[i,j] ~ dnorm(0, 0.01)
+          }
+        }
+        bPaceXStoch <- bPaceXStochtemp - mean(bPaceXStochtemp)
+
+        bStPopSzXShape ~ dunif(-5,5)
+        
+        for(i in 1:2){
+          bStSttemp[i] ~ dnorm(0, 0.01)
+        }
+        bStPopSzXStart <- bStSttemp - mean(bStSttemp)
+                
+        for(i in 1:4){
+          StPopSzXStochtemp[i] ~ dnorm(0, 0.01)
+        }
+        bStPopSzXStoch <- StPopSzXStochtemp - mean(StPopSzXStochtemp)
+        
+        for(i in 1:2){
+          bShSttemp[i] ~ dnorm(0, 0.01)
+        }
+        bShapeXStart <- bShSttemp - mean(bShSttemp)
+        
+        for(i in 1:4){
+          bShStochtemp[i] ~ dnorm(0, 0.01)
+        }
+        bShapeXStoch <- bShStochtemp - mean(bShStochtemp)
+        
+        for(i in 1:2){
+          for(j in 1:4){
+            stagestoch[i,j] ~ dnorm(0, 0.01)
+          }
+        }
+        bStageXStoch <- stagestoch - mean(stagestoch)
+      
+      }")
+writeLines(modelNovelShape, "popsize10yrSeedShape.jags")
+
+sumSeedSeedling <- summarySeedSeedling_all %>%
+  filter(!is.na(shapeItero))
+jags.data <- list(y = sumSeedSeedling$Ext_10yrs, N = nrow(sumSeedSeedling),
+                  nFam = length(unique(sumSeedSeedling$Family)),
+                  fam = as.factor(sumSeedSeedling$Family),
+                  StPopSz = sumSeedSeedling$PopulationSizeScaled,
+                  Pace = as.factor(sumSeedSeedling$Pace),
+                  start = as.factor(sumSeedSeedling$start),
+                  shapeI = sumSeedSeedling$ShapeIteroScaled,
+                  simtype = as.factor(sumSeedSeedling$simtype))
+
+## parameters monitored
+parameters <- c("b0Family","mu_int","sigma_int","bPace","bStPopSz","bShapeItero","bStoch","bStage",
+                "bPaceXStPopSz","bPaceXShape","bPaceXStage","bPaceXStoch",
+                "bStPopSzXStart","bStPopSzXShape","bStPopSzXStoch",
+                "bShapeXStart","bShapeXStoch",
+                "bStageXStoch")
+# MCMC settings
+ni <- 10000
+nt <- 6
+nb <- 5000
+nc <- 3
+# call JAGS from R
+resNovelshape <- jags(jags.data, inits = NULL, parameters, 
+            "popsize10yrSeedShape.jags", n.chains = nc, n.thin = nt, 
+            n.iter = ni, n.burnin = nb,
+            working.directory = getwd()) 
+
+save(resNovelshape, file = paste("C:/Users/DePrengm/OneDrive - Denver Botanic Gardens/P drive/My Documents/UCDenver_phd/Dissertation/Chapter3/Rdatas/binomialFamRndm10yrSeedShape",Sys.Date(),".Rdata", sep=""))
+print(resNovelshape, digits = 3)
+## Check convergence 
+# trace plots
+traplot(resNovelshape,c("b0Family","mu_int","sigma_int","bPace","bStPopSz","bShapeItero","bStoch","bStage",
+                "bPaceXStPopSz","bPaceXShape","bPaceXStage","bPaceXStoch",
+                "bStPopSzXStart","bStPopSzXShape","bStPopSzXStoch",
+                "bShapeXStart","bShapeXStoch",
+                "bStageXStoch"))
+# posterior distributions
+denplot(resNovelshape,c("bPace","bStPopSz","bShapeItero","bStoch","bStage",
+                "bPaceXStPopSz","bPaceXShape","bPaceXStage","bPaceXStoch",
+                "bStPopSzXStart","bStPopSzXShape","bStPopSzXStoch",
+                "bShapeXStart","bShapeXStoch",
+                "bStageXStoch"))
+
+# load("C:/Users/deprengm/OneDrive - Denver Botanic Gardens/P drive/My Documents/UCDenver_phd/Dissertation/Chapter3/Rdatas/binomialFamRndm10yrSeedShape2023-06-21.Rdata")
+```
+
+
+
