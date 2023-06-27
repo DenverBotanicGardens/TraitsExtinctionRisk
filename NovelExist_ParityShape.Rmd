@@ -1,5 +1,5 @@
 ---
-title: "Nominal novel and exist shape and parity"
+title: "novel and exist shape and parity"
 author: "Michelle DePrenger-Levin"
 date: "2023-06-20"
 output: html_document
@@ -28,15 +28,15 @@ ss <- "goldenrod3"
 
 Existing populations
 ```{r}
-load("C:/Users/DePrengm/OneDrive - Denver Botanic Gardens/P drive/My Documents/UCDenver_phd/Dissertation/Chapter3/Rdatas/plants_data2022-11-14.Rdata")
+load("./Rdatas/plants_data.Rdata")
 
-load("C:/Users/DePrengm/OneDrive - Denver Botanic Gardens/P drive/My Documents/UCDenver_phd/Dissertation/Chapter3/Rdatas/EP_asymptotic2022-11-15.Rdata")
+load("./Rdatas/Exist_Asymptotic.Rdata")
 
-load("C:/Users/DePrengm/OneDrive - Denver Botanic Gardens/P drive/My Documents/UCDenver_phd/Dissertation/Chapter3/Rdatas/EP_environ2022-11-16.Rdata")
+load("./Rdatas/Exist_environ.Rdata")
 
-load("C:/Users/DePrengm/OneDrive - Denver Botanic Gardens/P drive/My Documents/UCDenver_phd/Dissertation/Chapter3/Rdatas/EP_environdemo2022-11-16.Rdata")
+load("./Rdatas/Exist_environ-demo.Rdata")
 
-load("C:/Users/DePrengm/OneDrive - Denver Botanic Gardens/P drive/My Documents/UCDenver_phd/Dissertation/Chapter3/Rdatas/EP_binomPoisson2022-11-15.Rdata")
+load("./Rdatas/Exist_demostoch.Rdata")
 
 EP_asymptotic_sp <- EP_asymptotic %>%
   mutate(MatrixID = as.numeric(MatrixID)) %>%
@@ -151,40 +151,48 @@ model10year <-
         }
         
         for(i in 1:2){
-          bPace[i] ~ dunif(-5,5)
+          Pacetemp[i] ~ dnorm(0, 0.01)
         }
+        bPace <- Pacetemp - mean(Pacetemp) ## change in centered Pace
         
         ## also index for the interactions!
         for(i in 1:2){
-          bPaceXStPopSz[i] ~ dunif(-5,5)
+          PaceXStPopSztemp[i] ~ dnorm(0, 0.01)
         }
+        bPaceXStPopSz <- PaceXStPopSztemp - mean(PaceXStPopSztemp)
         
         for(i in 1:2){
-          bPaceXShape[i] ~ dunif(-5,5)
+          PaceXShapetemp[i] ~ dnorm(0, 0.01)
         }
+        bPaceXShape <- PaceXShapetemp - mean(PaceXShapetemp)
+        
         
         for(i in 1:4){
-          bStoch[i] ~ dunif(-5,5)
+          Starttemp[i] ~ dnorm(0, 0.01)
         }
+        bStoch <- Starttemp - mean(Starttemp)
 
         for(i in 1:2){
           for(j in 1:4){
-            bPaceXstart[i,j] ~ dunif(-5,5)
+            bPaceXstarttemp[i,j] ~ dnorm(0, 0.01)
           }
         }
+        bPaceXstart <- bPaceXstarttemp - mean(bPaceXstarttemp)
         
         # bStPopSzXStart
         for(i in 1:4){
-          bStPopSzXStart[i] ~ dunif(-5,5)
+          bStSttemp[i] ~ dnorm(0, 0.01)
         }
+        bStPopSzXStart <- bStSttemp - mean(bStSttemp)
         
         # bShapeXStart
         for(i in 1:4){
-          bShapeXStart[i] ~ dunif(-5,5)
+          bShSttemp[i] ~ dnorm(0, 0.01)
         }
+        bShapeXStart <- bShSttemp - mean(bShSttemp)
         
-        bStPopSz ~ dunif(-5,5)
-        bShapeItero ~ dunif(-5,5)
+        bStPopSz ~ dunif(-3,3)
+        bShapeItero ~ dunif(-3,3)
         bStPopSzXShape ~ dunif(-5,5)
         
         }")
@@ -213,9 +221,8 @@ res1 <- jags(jags.data, inits = NULL, parameters,
             n.iter = ni, n.burnin = nb,
             working.directory = getwd()) 
 
-save(res1, file = paste("C:/Users/DePrengm/OneDrive - Denver Botanic Gardens/P drive/My Documents/UCDenver_phd/Dissertation/Chapter3/Rdatas/binomialFamRndm10yrs_SSD10000sample1",Sys.Date(),".Rdata", sep=""))
+save(res1, file = paste("./Rdatas/ExistShape",Sys.Date(),".Rdata", sep=""))
 
-# load("C:/Users/deprengm/OneDrive - Denver Botanic Gardens/P drive/My Documents/UCDenver_phd/Dissertation/Chapter3/Rdatas/binomialFamRndm10yrs_SSD10000sample12023-06-19.Rdata")
 ```
 
 Parity
@@ -333,7 +340,7 @@ resExistParity <- jags(jags.data, inits = NULL, parameters,
             n.iter = ni, n.burnin = nb,
             working.directory = getwd()) 
 
-save(resExistParity, file = paste("C:/Users/DePrengm/OneDrive - Denver Botanic Gardens/P drive/My Documents/UCDenver_phd/Dissertation/Chapter3/Rdatas/ExistParity",Sys.Date(),".Rdata", sep=""))
+save(resExistParity, file = paste("./Rdatas/ExistParity",Sys.Date(),".Rdata", sep=""))
 print(resExistParity, digits = 3)
 ## Check convergence 
 # trace plots
@@ -347,7 +354,6 @@ denplot(resExistParity,c("mu_int","sigma_int","bPace","bParity","bStoch","bStPop
                 "bParityXStoch","bParityXStPopSz",
                 "bStPopSzXStoch"))
 
-# load("C:/Users/deprengm/OneDrive - Denver Botanic Gardens/P drive/My Documents/UCDenver_phd/Dissertation/Chapter3/Rdatas/ExistParity2023-06-21.Rdata")
 
 ```
 
@@ -356,19 +362,19 @@ denplot(resExistParity,c("mu_int","sigma_int","bPace","bParity","bStoch","bStPop
 # Novel  
 
 ```{r}
-load("C:/Users/DePrengm/OneDrive - Denver Botanic Gardens/P drive/My Documents/UCDenver_phd/Dissertation/Chapter3/Rdatas/plants_data2022-11-14.Rdata")
+load("./Rdatas/plants_data.Rdata")
 
 ## Sample plants.seedbank asymptotic 
-load("C:/Users/DePrengm/OneDrive - Denver Botanic Gardens/P drive/My Documents/UCDenver_phd/Dissertation/Chapter3/Rdatas/Time2Ext_EP2022-11-05.Rdata")
+load("./Rdatas/Novel_Asymptotic.Rdata")
 
 ## Sample plants.seedbank demographic stochastic (binomial and Poisson)
-load("C:/Users/DePrengm/OneDrive - Denver Botanic Gardens/P drive/My Documents/UCDenver_phd/Dissertation/Chapter3/Rdatas/demostoch2022-11-15.Rdata")
+load("./Rdatas/Novel_demostoch.Rdata")
 
 ## sample species with different matrices run simulataneously without demo stoch
-load("C:/Users/DePrengm/OneDrive - Denver Botanic Gardens/P drive/My Documents/UCDenver_phd/Dissertation/Chapter3/Rdatas/environ_portfolio2022-11-05.Rdata")
+load("./Rdatas/Novel_environ.Rdata")
 
 ## Sample species and run all matrices of a life history within simultaneously with demo stoch
-load("C:/Users/DePrengm/OneDrive - Denver Botanic Gardens/P drive/My Documents/UCDenver_phd/Dissertation/Chapter3/Rdatas/environ_portfolio_demo2022-11-15.Rdata")
+load("./Rdatas/Novel_environ-demo.Rdata")
 
 Asymp <- Time2Ext_EP %>%
   mutate(simtype = "Asymptotic") %>%
@@ -590,7 +596,7 @@ resNovelParity <- jags(jags.data, inits = NULL, parameters,
             "modelNovelParity.jags", n.chains = nc, n.thin = nt, 
             n.iter = ni, n.burnin = nb,
             working.directory = getwd()) 
-save(resNovelParity, file = paste("C:/Users/DePrengm/OneDrive - Denver Botanic Gardens/P drive/My Documents/UCDenver_phd/Dissertation/Chapter3/Rdatas/modelNovelParity",Sys.Date(),"..Rdata", sep=""))
+save(resNovelParity, file = paste("./Rdatas/modelNovelParity",Sys.Date(),"..Rdata", sep=""))
 print(resSeed, digits = 3)
 ## Check convergence 
 # trace plots
@@ -751,7 +757,7 @@ resNovelshape <- jags(jags.data, inits = NULL, parameters,
             n.iter = ni, n.burnin = nb,
             working.directory = getwd()) 
 
-save(resNovelshape, file = paste("C:/Users/DePrengm/OneDrive - Denver Botanic Gardens/P drive/My Documents/UCDenver_phd/Dissertation/Chapter3/Rdatas/binomialFamRndm10yrSeedShape",Sys.Date(),".Rdata", sep=""))
+save(resNovelshape, file = paste("./Rdatas/binomialFamRndm10yrSeedShape",Sys.Date(),".Rdata", sep=""))
 print(resNovelshape, digits = 3)
 ## Check convergence 
 # trace plots
@@ -766,8 +772,6 @@ denplot(resNovelshape,c("bPace","bStPopSz","bShapeItero","bStoch","bStage",
                 "bStPopSzXStart","bStPopSzXShape","bStPopSzXStoch",
                 "bShapeXStart","bShapeXStoch",
                 "bStageXStoch"))
-
-# load("C:/Users/deprengm/OneDrive - Denver Botanic Gardens/P drive/My Documents/UCDenver_phd/Dissertation/Chapter3/Rdatas/binomialFamRndm10yrSeedShape2023-06-21.Rdata")
 ```
 
 
