@@ -1,0 +1,218 @@
+---
+title: "Existing treatments"
+author: "Michelle DePrenger-Levin"
+date: "2023-06-28"
+output: html_document
+---
+
+
+```{r}
+load("./Rdatas/plants_data.Rdata")
+```
+
+
+Asymptotic
+```{r}
+EP_asymptotic <- do.call(rbind,lapply(c(1,10,100,500,1000), function(stpopsz){
+  # out <- do.call(rbind, lapply(1:length(plants.data$MatrixID), function(ind){
+  out <- do.call(rbind, lapply(1:1e4, function(x){
+    ind <- sample(1:length(plants.data$MatrixID),1)
+    # an empty vector of numbers in stage
+    n <- matrix(rep(0,length(plants.data$activeclasses[[ind]])), ncol = 1, byrow = TRUE)  
+    ## stable.stage start
+    ssd <- stable.stage(plants.data$matA[[ind]])
+    n[,1] <- round(stpopsz*ssd,0)
+    if(sum(n[,1])==0) n[,1][which.max(ssd)] <- stpopsz
+    Time2Ext <- NA
+    for(yr in 1:100){
+      n_t1 <- floor(plants.data$matA[[ind]] %*% n[,yr])
+      if(sum(n_t1)==0){  #| is.na(sum(n_t1))){ Think NAs come up when numbers are too big so both never going extinct and quickly going extinct show up as extinct
+        Time2Ext <- yr+1
+        break
+        }
+      n <- cbind(n,n_t1)
+      }
+    data.frame(Time2Ext, start = "SSD_Asymptotic", StPopSz = stpopsz, LH = plants.data$LifeHistory[ind],
+               DegreeItero = plants.data$DegreeItero[ind], 
+               ShapeItero = plants.data$shapeItero[ind],
+               AgeMature = plants.data$matureAge[ind],
+               MatrixID = plants.data$MatrixID[ind])
+    })) ## end replicates
+  out
+  }))
+```
+
+
+Demographic stochasticity    
+```{r}
+EP_binomPoisson <- do.call(rbind,lapply(c(1,10,100,500,1000), function(stpopsz){
+  out <- do.call(rbind, lapply(1:10000, function(x_rep){
+      ind <- sample(1:length(plants.data$matA),1)
+      n <- matrix(rep(0,length(plants.data$activeclasses[[ind]])), ncol = 1, byrow = TRUE) # an empty vector of numbers in stage 
+      ## stable.stage start
+      ssd <- stable.stage(plants.data$matA[[ind]])
+      n[,1] <- round(stpopsz*ssd,0)
+      if(sum(n[,1])==0) n[which.max(ssd)] <- stpopsz
+      Time2Ext <- NA
+      for(yr in 1:100){
+        if(nrow(n)>1){
+        grow_surv <- colSums(apply(plants.data$matU[[ind]],1,function(m_row) {
+          sapply(1:length(plants.data$activeclasses[[ind]]), function(x){
+            rbinom(1, size = n[x,yr], prob = m_row[x])
+            })
+          }))
+        fert <- colSums(apply(plants.data$matF[[ind]], 1, function(m_row) {
+          sapply(1:length(plants.data$activeclasses[[ind]]), function(x){
+            rpois(1, m_row[x]*n[x,yr])
+          })
+        }))
+        } else {
+          grow_surv <- rbinom(1, size = n[,yr], prob = plants.data$matU[[ind]])
+          fert <- rpois(1, plants.data$matF[[ind]]*n[,yr])
+        }
+        if(sum(grow_surv+fert) == 0 | is.na(sum(grow_surv+fert))){ 
+          Time2Ext <- yr
+          break
+          }
+        n <- cbind(n,grow_surv + fert)
+        }
+      data.frame(Time2Ext, start = "SSD_demographic", StPopSz = stpopsz, LH = plants.data$LifeHistory[ind],
+                 DegreeItero = plants.data$DegreeItero[ind], AgeMature = plants.data$matureAge[ind],
+                 MatrixID = plants.data$MatrixID[ind])
+      })) ## end replicates
+  out
+}))
+
+```
+
+
+Environmental stochasticity    
+```{r}
+
+multiMats <- plants.data %>%
+  mutate(mat.dims = sapply(matU, function(x) dim(x)[1])) %>%
+  group_by(SpeciesAccepted, LifeHistory, mat.dims) %>%
+  mutate(SpeciesLH = mapply(function(x,y,z) paste0(x,y,z), SpeciesAccepted,LifeHistory, mat.dims)) %>%
+  filter(!is.na(LifeHistory)) %>%
+  mutate(NumMats = n(), .groups = "keep") %>%
+  filter(NumMats > 2)
+
+length(table(multiMats$SpeciesLH))
+
+multiMats %>%
+  group_by(SpeciesAccepted, LifeHistory, mat.dims) %>%
+  summarise(NumMats = n()) %>%
+  print(n=200)
+
+multiMats %>%
+  group_by(SpeciesAccepted, LifeHistory) %>%
+  mutate(NumMats = n(), .groups = "keep") %>%
+  filter(NumMats > 2) %>%
+  group_by(LifeHistory) %>%
+  summarise(n_distinct(SpeciesAccepted))
+
+EP_environ <- do.call(rbind,lapply(c(1,10,100,500,1000), function(stpopsz){
+  out <- do.call(rbind, lapply(1:10000, function(rep.num){
+    splh <- sample(multiMats$SpeciesLH,1)
+    print(splh)
+      ## A list of vectors each the length of stages
+    n <- matrix(rep(0,multiMats$mat.dims[multiMats$SpeciesLH == splh][1], ncol= 1, byrow = TRUE))
+    
+    ## stable.stage start of mean matrix
+    ssd <- stable.stage(mean(multiMats$matA[multiMats$SpeciesLH == splh]))
+    
+    n[,1] <- round(stpopsz*ssd,0)
+    if(sum(n)==0) n[which.max(ssd),1] <- stpopsz
+    
+    Time2Ext <- NA
+    for(yr in 1:100){
+      matA <- sample(multiMats$matA[multiMats$SpeciesLH == splh],1)[[1]]
+      n_t1 <- floor(matA %*% n[,yr])
+      n <- cbind(n,n_t1)
+      if(sum(n_t1) == 0){
+        Time2Ext <- yr
+        break
+      }
+    }
+    
+    data.frame(Time2Ext, start = "SSD_environ", StPopSz = stpopsz, 
+               LH = multiMats$LifeHistory[multiMats$SpeciesLH == splh][1],
+               DegreeItero = mean(multiMats$DegreeItero[multiMats$SpeciesLH == splh]), 
+               ShapeItero = mean(multiMats$shapeItero[multiMats$SpeciesLH == splh]),
+               AgeMature = mean(multiMats$matureAge[multiMats$SpeciesLH == splh]),
+               MatrixID = paste(multiMats$MatrixID[multiMats$SpeciesLH == splh],
+                                collapse = "_"))
+      })) ## end replicates
+  out
+}))
+
+```
+
+
+Environmental and demographic stochasticity  
+```{r}
+multiMats <- plants.data %>%
+  mutate(mat.dims = sapply(matU, function(x) dim(x)[1])) %>%
+  group_by(SpeciesAccepted, LifeHistory, mat.dims) %>%
+  mutate(SpeciesLH = mapply(function(x,y,z) paste0(x,y,z), SpeciesAccepted,LifeHistory, mat.dims)) %>%
+  filter(!is.na(LifeHistory)) %>%
+  mutate(NumMats = n(), .groups = "keep") %>%
+  filter(NumMats > 2)
+
+multiMats %>%
+  group_by(SpeciesAccepted, LifeHistory, mat.dims) %>%
+  summarise(NumMats = n()) %>%
+  print(n=200)
+
+EP_environdemo <- do.call(rbind,lapply(c(1,10,100,500,1000), function(stpopsz){
+  out <- do.call(rbind, lapply(1:10000, function(rep.num){
+    splh <- sample(multiMats$SpeciesLH,1)
+    print(splh)
+      ## A list of vectors each the length of stages
+    n <- matrix(rep(0,multiMats$mat.dims[multiMats$SpeciesLH == splh][1], ncol= 1, byrow = TRUE))
+    
+    ## stable.stage start of mean matrix
+    ssd <- stable.stage(mean(multiMats$matA[multiMats$SpeciesLH == splh]))
+    
+    n[,1] <- round(stpopsz*ssd,0)
+    if(sum(n)==0) n[which.max(ssd),1] <- stpopsz
+    
+    Time2Ext <- NA
+    for(yr in 1:100){
+      ind <- sample(1:length(multiMats$matU[multiMats$SpeciesLH == splh]),1)
+      if(nrow(n)>1){
+        grow_surv <- colSums(apply(multiMats$matU[multiMats$SpeciesLH == splh][[ind]],1,function(m_row) {
+            sapply(1:multiMats$mat.dims[multiMats$SpeciesLH == splh][[1]], function(x){
+              rbinom(1, size = n[x,yr], prob = m_row[x])
+              })
+            }))
+          fert <- colSums(apply(multiMats$matF[multiMats$SpeciesLH == splh][[ind]], 1, function(m_row) {
+            sapply(1:multiMats$mat.dims[multiMats$SpeciesLH == splh][[1]], function(x){
+              min(rpois(1, m_row[x]*n[x,yr]),1e9) ## NAs if value too large
+            })
+          }))
+          } else {
+            grow_surv <- rbinom(1, size = n[,yr], prob = multiMats$matU[multiMats$SpeciesLH == splh][[ind]])
+            fert <- rpois(1, multiMats$matF[multiMats$SpeciesLH == splh][[ind]]*n[,yr])
+          }
+          if(sum(grow_surv+fert) == 0){ 
+            Time2Ext <- yr
+            break
+            }
+          n <- cbind(n,grow_surv + fert)
+        }
+  
+        data.frame(Time2Ext, start = "SSD_environdemo", StPopSz = stpopsz, 
+                   LH = multiMats$LifeHistory[multiMats$SpeciesLH == splh][1],
+                   DegreeItero = mean(multiMats$DegreeItero[multiMats$SpeciesLH == splh]), 
+               ShapeItero = mean(multiMats$shapeItero[multiMats$SpeciesLH == splh]), 
+                   AgeMature = mean(multiMats$matureAge[multiMats$SpeciesLH == splh]),
+                   MatrixID = paste(multiMats$MatrixID[multiMats$SpeciesLH == splh],
+                                    collapse = "_"))
+      })) ## end replicates
+  out
+}))
+
+```
+ 
+ 

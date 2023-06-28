@@ -1,0 +1,360 @@
+---
+title: "Compare asymtotic demo env"
+author: "Michelle DePrenger-Levin"
+date: "2022-10-25"
+output: html_document
+---
+TraitsER
+## Categorical pace and parity
+Stage [Seed]  [Seedling]
+
+Compare the impact of founding population size, founding population stage, pace (categorized), and parity (categorized), on extinction risk with asymptotic, demographic, environmental, and demo + envion stochasticity.
+
+
+```{r}
+library(dplyr)
+library(ggplot2)
+library(tidyr)
+library(patchwork)
+
+
+load("./Rdatas/plants_data.Rdata")
+
+plants.seedbank <- plants.data %>%
+  filter(sapply(matC, function(x) sum(x)==0)) %>%  ## remove any that call out clonal growth
+  filter(seedbank == "Yes" &
+           !is.na(LifeHistory)) 
+```
+
+
+Asymptotic (control)    
+```{r}
+Time2Ext_EP <- do.call(rbind,lapply(c(1,10,100,500,1000), function(stpopsz){
+  out <- do.call(rbind, lapply(1:10000, function(x){  #length(plants.seedbank$MatrixID) sample with replacement
+      ind <- sample(1:length(plants.seedbank$matA),1)
+      n <- matrix(rep(0,length(plants.seedbank$activeclasses[[ind]])), ncol = 1, byrow = TRUE) # an empty vector of numbers in stage 
+      ## seed start
+      ssd <- stable.stage(plants.seedbank$matA[[ind]])
+      starthere <- which(ssd == max(ssd["prop" == plants.seedbank$activeclasses[[ind]]])) ## if more than one prop stage, start with the one with the greatest stable stage distribution density
+      n[starthere] <- stpopsz
+
+      Time2Ext <- NA
+      for(yr in 1:500){
+        n_t1 <- floor(plants.seedbank$matA[[ind]] %*% n[,yr])
+        if(sum(n_t1)==0| is.na(sum(n_t1))){ 
+          Time2Ext <- yr+1
+          break
+          }
+        n <- cbind(n,n_t1)
+        }
+      seedout <- data.frame(Time2Ext, start = "seed", StPopSz = stpopsz, LH = plants.seedbank$LifeHistory[ind],
+                            DegreeItero = plants.seedbank$DegreeItero[ind], AgeMature = plants.seedbank$matureAge[ind],
+                            MatrixID = plants.seedbank$MatrixID[ind])
+      rm(yr)
+      rm(n)
+      
+      ## Seedling start
+      n <- matrix(rep(0,length(plants.seedbank$activeclasses[[ind]])), ncol = 1, byrow = TRUE) # an empty vector of numbers in stage 
+      n[plants.seedbank$start_life[[ind]]] <- stpopsz ## the first non-seed stage
+      
+      Time2Ext <- NA
+      for(yr in 1:500){
+        n_t1 <- floor(plants.seedbank$matA[[ind]] %*% n[,yr])
+        if(sum(n_t1)==0 | is.na(sum(n_t1))){ 
+          Time2Ext <- yr+1
+          break
+          }
+        n <- cbind(n,n_t1)
+      }  
+      seedlingout <- data.frame(Time2Ext, start = "seedling", StPopSz = stpopsz, LH = plants.seedbank$LifeHistory[ind],
+                            DegreeItero = plants.seedbank$DegreeItero[ind], AgeMature = plants.seedbank$matureAge[ind],
+                            MatrixID = plants.seedbank$MatrixID[ind])
+        
+      rbind(seedout,seedlingout)
+  })) ## end replicates
+  out
+}))
+
+```
+
+Demographic stochasticity   
+```{r}
+demostoch <- do.call(rbind,lapply(c(1,10,100,500,1000), function(stpopsz){
+  out <- do.call(rbind, lapply(1:10000, function(x){
+      ind <- sample(1:length(plants.seedbank$matU),1)
+      n <- matrix(rep(0,length(plants.seedbank$activeclasses[[ind]])), nrow = 1, byrow = TRUE)
+      
+      #Seed start
+        ssd <- stable.stage(plants.seedbank$matA[[ind]])
+        ## if more than one prop stage, start with the one with the greatest stable stage distribution density
+        starthere <- which(ssd == max(ssd["prop" == plants.seedbank$activeclasses[[ind]]])) 
+        n[starthere] <- stpopsz
+      
+        colnames(n) <- colnames(plants.seedbank$matU[[ind]])
+        
+        Time2Ext <- NA
+      # Each row is a year for number in each stage
+      for(yr in 1:100){
+        grow_surv <- colSums(apply(plants.seedbank$matU[[ind]],1,function(m_row) {
+          sapply(1:length(plants.seedbank$activeclasses[[ind]]), function(x){
+            rbinom(1, size = n[yr,x], prob = m_row[x])
+            })
+          }))
+        fert <- colSums(apply(plants.seedbank$matF[[ind]], 1, function(m_row) {
+          sapply(1:length(plants.seedbank$activeclasses[[ind]]), function(x){
+            rpois(1, m_row[x]*n[yr,x])
+          })
+        }))
+        if(sum(grow_surv+fert) == 0 | is.na(sum(grow_surv+fert))){ 
+          Time2Ext <- yr
+          break
+          }
+        n <- rbind(n,grow_surv + fert)
+      }
+      seedout <- data.frame(Time2Ext, start = "seed", StPopSz = stpopsz, LH = plants.seedbank$LifeHistory[ind],
+                      DegreeItero = plants.seedbank$DegreeItero[ind], AgeMature = plants.seedbank$matureAge[ind],
+                      MatrixID = plants.seedbank$MatrixID[ind])
+      
+      
+      ## Seedling start
+        rm(n)
+        n <- matrix(rep(0,length(plants.seedbank$activeclasses[[ind]])), nrow = 1, byrow = TRUE)
+        n[plants.seedbank$start_life[[ind]]] <- stpopsz ## the first non-seed stage
+        Time2Ext <- NA
+        
+        for(yr in 1:100){
+        grow_surv <- colSums(apply(plants.seedbank$matU[[ind]],1,function(m_row) {
+          sapply(1:length(plants.seedbank$activeclasses[[ind]]), function(x){
+            rbinom(1, size = n[yr,x], prob = m_row[x])
+            })
+          }))
+        fert <- colSums(apply(plants.seedbank$matF[[ind]], 1, function(m_row) {
+          sapply(1:length(plants.seedbank$activeclasses[[ind]]), function(x){
+            rpois(1, m_row[x]*n[yr,x])
+          })
+        }))
+        if(sum(grow_surv+fert | is.na(sum(grow_surv+fert))) == 0){ 
+          Time2Ext <- yr
+          break
+          }
+        n <- rbind(n,grow_surv + fert)
+      }
+      seedlingout <- data.frame(Time2Ext, start = "seedling", StPopSz = stpopsz, LH = plants.seedbank$LifeHistory[ind],
+                      DegreeItero = plants.seedbank$DegreeItero[ind], AgeMature = plants.seedbank$matureAge[ind],
+                      MatrixID = plants.seedbank$MatrixID[ind])
+       rbind(seedout,seedlingout)
+       }))
+  out
+}))
+```
+
+
+Environmental stochasticity   
+```{r}
+
+## only species represented by 3 or more matrices; 20 species
+multiMats <- plants.data %>%
+  mutate(mat.dims = sapply(matU, function(x) dim(x)[1])) %>%
+  group_by(SpeciesAccepted, LifeHistory, mat.dims) %>%
+  mutate(SpeciesLH = mapply(function(x,y,z) paste0(x,y,z), SpeciesAccepted,LifeHistory, mat.dims)) %>%
+  filter(!is.na(LifeHistory)) %>%
+  mutate(NumMats = n(), .groups = "keep") %>%
+  filter(NumMats > 2)
+
+multiMats@data %>%
+  dplyr::select(SpeciesAccepted, Family, Country:Ecoregion)%>%
+  distinct() %>%
+  arrange(Family, SpeciesAccepted)
+
+data.frame(multiMats@data[!duplicated("SpeciesAccepted"),c("SpeciesAccepted", "Family","Country","Ecoregion","CensusType")])
+
+table(multiMats$LifeHistory)
+
+environ_portfolio <- do.call(rbind,lapply(c(1,10,100,500,1000), function(stpopsz){
+  out <- do.call(rbind, lapply(1:10000, function(x){
+    sp <- sample(multiMats$SpeciesLH,1)
+    ## A vector the length of stages
+    n <- matrix(rep(0,length(multiMats$activeclasses[multiMats$SpeciesLH == sp][[1]]), ncol= 1, byrow = TRUE))
+    
+    ## seed start
+    ssd <- stable.stage(mean(multiMats$matA[multiMats$SpeciesLH == sp]))
+    starthere <- which(ssd == max(ssd[grepl("prop", multiMats$activeclasses[multiMats$SpeciesLH == sp][[1]])]))
+    
+    n[starthere] <- stpopsz
+    
+    ### Build multistate model Caswell 2001 pg 62:67 with no 'dispersal' among environments
+    ## block diagonal
+    # multistatemodel <- Matrix::bdiag(multiMats$matA[multiMats$SpeciesAccepted == sp])
+    
+    Time2Ext <- NA
+    for(yr in 1:100){ ## cycle through each year
+      matA <- sample(multiMats$matA[multiMats$SpeciesLH == sp],1)[[1]]
+      n_t1 <- floor(matA %*% n[,yr])
+      n <- cbind(n,n_t1)
+      if(sum(n_t1) == 0){
+        Time2Ext <- yr
+        break
+      }
+    }
+    seedout <- data.frame(Time2Ext, start = "seed", StPopSz = stpopsz,
+                          LH = multiMats$LifeHistory[multiMats$SpeciesLH == sp][1],
+                          DegreeItero = mean(multiMats$DegreeItero[multiMats$SpeciesLH == sp]), 
+                          ShapeItero = mean(multiMats$shapeItero[multiMats$SpeciesLH == sp]),
+                          AgeMature = mean(multiMats$matureAge[multiMats$SpeciesLH == sp]),
+                          MatrixID = paste(multiMats$MatrixID[multiMats$SpeciesLH == sp],
+                                           collapse = "_"))
+    rm(yr)
+    rm(n)
+    
+    ## Seedling start
+    n <- matrix(rep(0,length(multiMats$activeclasses[multiMats$SpeciesLH == sp][[1]]), ncol= 1, byrow = TRUE))
+
+    n[multiMats$start_life[multiMats$SpeciesLH == sp][1]] <- stpopsz
+    
+    Time2Ext <- NA
+    for(yr in 1:500){ ## cycle through each year
+      matA <- sample(multiMats$matA[multiMats$SpeciesLH == sp],1)[[1]]
+      n_t1 <- floor(matA %*% n[,yr])
+      n <- cbind(n,n_t1)
+      if(sum(n_t1) == 0){
+        Time2Ext <- yr
+        break
+      }
+    }
+    seedlingout <- data.frame(Time2Ext, start = "seedling", StPopSz = stpopsz,
+                          LH = multiMats$LifeHistory[multiMats$SpeciesLH == sp][1],
+                          DegreeItero = mean(multiMats$DegreeItero[multiMats$SpeciesLH == sp]), 
+                          ShapeItero = mean(multiMats$shapeItero[multiMats$SpeciesLH == sp]),
+                          AgeMature = mean(multiMats$matureAge[multiMats$SpeciesLH == sp]),
+                          MatrixID = paste(multiMats$MatrixID[multiMats$SpeciesLH == sp],
+                                           collapse = "_"))
+    
+    rbind(seedout, seedlingout)
+  }))
+  out
+}))
+
+```
+
+
+
+Demographic and environmental stochasticity    
+```{r}
+## only species represented by 3 or more matrices; 20 species
+multiMats <- plants.seedbank %>%
+  mutate(mat.dims = sapply(matU, function(x) dim(x)[1])) %>%
+  group_by(SpeciesAccepted, LifeHistory, mat.dims) %>%
+  mutate(SpeciesLH = mapply(function(x,y,z) paste0(x,y,z), SpeciesAccepted,LifeHistory, mat.dims)) %>%
+  filter(!is.na(LifeHistory)) %>%
+  mutate(NumMats = n(), .groups = "keep") %>%
+  filter(NumMats > 2)
+
+table(multiMats$LifeHistory)
+
+environ_portfolio_demo <- do.call(rbind,lapply(c(1,10,100,500,1000), function(stpopsz){
+  out <- do.call(rbind, lapply(1:10000, function(x){
+    sp <- sample(multiMats$SpeciesLH,1)
+    n <- matrix(rep(0,multiMats$mat.dims[multiMats$SpeciesLH == sp][1], ncol= 1, byrow = TRUE))
+    
+    ## seed start
+    ssd <- stable.stage(mean(multiMats$matA[multiMats$SpeciesLH == sp]))
+    starthere <- which(ssd == max(ssd[grepl("prop", multiMats$activeclasses[multiMats$SpeciesLH == sp][[1]])]))
+    n[starthere] <- stpopsz
+    
+    ### Build multistate model Caswell 2001 pg 62:67 with no 'dispersal' among environments
+      ## block diagonal
+     # deathBlock <- Matrix::bdiag(multiMats$matU[multiMats$SpeciesAccepted == sp & multiMats$LifeHistory == lh])
+     # birthBlock <- Matrix::bdiag(multiMats$matF[multiMats$SpeciesAccepted == sp & multiMats$LifeHistory == lh])
+      
+      Time2Ext <- NA
+      for(yr in 1:100){ ## cycle through each year
+        print(paste(yr, sp))
+        ## Sum rows for how many individuals survived (status or grew into that stage)
+        ## by row 
+        ## by col enter the number of individuals that would be in that cell and prob of that transition
+        ## n is a column per year
+        ind <- sample(1:length(multiMats$matU[multiMats$SpeciesLH == sp]),1)
+        matU <- multiMats$matU[multiMats$SpeciesLH == sp][[ind]]
+        matF <- multiMats$matF[multiMats$SpeciesLH == sp][[ind]]
+      if(nrow(n)>1){
+        grow_surv <- colSums(apply(matU,1,function(m_row) {
+            sapply(1:multiMats$mat.dims[multiMats$SpeciesLH == sp][[1]], function(x){
+              rbinom(1, size = n[x,yr], prob = m_row[x])
+              })
+            }))
+          fert <- colSums(apply(matF, 1, function(m_row) {
+            sapply(1:multiMats$mat.dims[multiMats$SpeciesLH == sp][[1]], function(x){
+              min(rpois(1, m_row[x]*n[x,yr]),1e9) ## NAs if value too large
+            })
+          }))
+          } else {
+            grow_surv <- rbinom(1, size = n[,yr], prob = matU)
+            fert <- rpois(1, matF*n[,yr])
+          }
+        
+          if(sum(grow_surv+fert) == 0){  
+            Time2Ext <- yr
+            break
+            }
+          n <- cbind(n,grow_surv + fert)
+      }
+      
+      seedout <- data.frame(Time2Ext, start = "seed", StPopSz = stpopsz, 
+                            LH = multiMats$LifeHistory[multiMats$SpeciesLH == sp][1],
+                            DegreeItero = mean(multiMats$DegreeItero[multiMats$SpeciesLH == sp]), 
+                            ShapeItero = mean(multiMats$shapeItero[multiMats$SpeciesLH == sp]),
+                            AgeMature = mean(multiMats$matureAge[multiMats$SpeciesLH == sp]),
+                            MatrixID = paste(multiMats$MatrixID[multiMats$SpeciesLH == sp],
+                                             collapse = "_"))
+      rm(yr)
+      rm(n)
+      
+      ## Seedling start
+      n <- matrix(rep(0,multiMats$mat.dims[multiMats$SpeciesLH == sp][1], ncol= 1, byrow = TRUE))
+    
+      n[multiMats$start_life[multiMats$SpeciesLH == sp][[1]]] <- stpopsz
+      
+      Time2Ext <- NA
+      for(yr in 1:100){
+        ind <- sample(1:length(multiMats$matU[multiMats$SpeciesLH == sp]),1)
+        matU <- multiMats$matU[multiMats$SpeciesLH == sp][[ind]]
+        matF <- multiMats$matF[multiMats$SpeciesLH == sp][[ind]]
+      if(nrow(n)>1){
+        grow_surv <- colSums(apply(matU,1,function(m_row) {
+            sapply(1:multiMats$mat.dims[multiMats$SpeciesLH == sp][[1]], function(x){
+              rbinom(1, size = n[x,yr], prob = m_row[x])
+              })
+            }))
+        fert <- colSums(apply(matF, 1, function(m_row) {
+          sapply(1:multiMats$mat.dims[multiMats$SpeciesLH == sp][[1]], function(x){
+            min(rpois(1, m_row[x]*n[x,yr]),1e9) ## NAs if value too large
+            })
+          }))
+          } else {
+            grow_surv <- rbinom(1, size = n[,yr], prob = matU)
+            fert <- rpois(1, matF*n[,yr])
+          }
+        if(sum(grow_surv+fert) == 0){ 
+          Time2Ext <- yr
+          break
+          }
+        n <- cbind(n,grow_surv + fert)
+        }
+      
+      seedlingout <- data.frame(Time2Ext, start = "seedling", StPopSz = stpopsz, 
+                                LH = multiMats$LifeHistory[multiMats$SpeciesLH == sp][1],
+                                DegreeItero = mean(multiMats$DegreeItero[multiMats$SpeciesLH == sp]), 
+                                ShapeItero = mean(multiMats$shapeItero[multiMats$SpeciesLH == sp]), 
+                                AgeMature = mean(multiMats$matureAge[multiMats$SpeciesLH == sp]),
+                                MatrixID = paste(multiMats$MatrixID[multiMats$SpeciesLH == sp],
+                                                 collapse = "_"))
+      
+      rbind(seedout, seedlingout)
+    })) # end out
+    out
+    }))
+
+
+
+```
+
