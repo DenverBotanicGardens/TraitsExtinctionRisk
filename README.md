@@ -21,7 +21,7 @@ R code:
 
 Links to other publicly accessible locations of the data:
   * https://github.com/DenverBotanicGardens/TraitsExtinctionRisk
-  * dryad (in progress)
+  * dryad (https://doi.org/10.5061/dryad.2547d7wzv)
 
 Data was derived from the following sources:
   * COMPADRE Plant Matrix Database v6.22.5.0
