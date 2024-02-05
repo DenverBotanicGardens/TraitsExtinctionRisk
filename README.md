@@ -1,4 +1,4 @@
-# Plant matrix population models and simulations
+# Pace and parity predict short-term persistence of small plant populations
 ---
 
 Plant matrix population models were used to simulate asymptotic growth, demographic and environmental stochasticity. 
